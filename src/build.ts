@@ -1,5 +1,6 @@
-import type { Artifact, BuildOptions, MobileTarget, TargetInfo } from "./types";
-import { checkAndInstallDesktopDependencies, checkAndInstallMobileDependencies, getTargetInfo } from "./utils";
+import { installAndroidBuildDependencies } from "./builds/android";
+import type { Artifact, BuildOptions, MobileTarget, TargetArch, TargetInfo } from "./types";
+import { execCommand, getTargetInfo, isCommandAvailable, retry } from "./utils";
 
 export async function buildProject(
   debug: boolean,
@@ -28,27 +29,94 @@ export async function buildProject(
     : getTargetInfo();
 
   console.log(`======== Build Target Info ========\nTarget platform type: ${target_info.type}\nTarget platform: ${target_info.target_platform} (${target_info.arch})`);
-
-  if (target_info.type === 'desktop') {
+  
+  const target_platform_type = target_info.type;
+  if (target_platform_type === 'desktop') {
     // Desktop build logic
     return await buildDesktopArtifacts();
-  } else if (target_info.type === 'mobile') {
-    // Mobile build logic
-    return await buildMobileArtifacts(target_info.target_platform as MobileTarget);
+  } else if (target_platform_type === 'mobile') {
+    // Check and install mobile packaging tools.
+    await checkAndInstallMobilePackagingTools();
+    return await buildMobileArtifacts(target_info);
   } else {
-    throw new Error(`Unsupported target type: ${target_info.type}`);
+    throw new Error(`Unsupported target type: ${target_platform_type}`);
   }
 }
 
+interface MobilePackagingToolsInfo {
+  cargo_makepad_info: {
+    installed: boolean;
+    path?: string | undefined;
+  }
+}
+
+// Use Makepad official `cargo-makepad` tool for mobile packaging.
+// See `cargo-makepad` for more details: https://github.com/makepad/makepad/tree/dev/tools/cargo_makepad
+async function checkAndInstallMobilePackagingTools(): Promise<MobilePackagingToolsInfo> {
+  const packaging_tools_info: MobilePackagingToolsInfo = {
+    cargo_makepad_info: {
+      installed: false,
+    },
+  };
+
+  // 1. Check `cargo-makepad` whether it is installed
+  const { installed, path } = isCommandAvailable('cargo-makepad');
+  if (installed) {
+    console.log('✅ cargo-makepad already installed.');
+    packaging_tools_info.cargo_makepad_info.installed = true;
+    packaging_tools_info.cargo_makepad_info.path = path;
+    return packaging_tools_info;
+  }
+
+  // 2. Install `cargo-makepad` if not installed
+  console.log('⚙️  cargo-makepad not found. Installing...');
+  await retry(async () => {
+    await execCommand('cargo', [
+      'install',
+      '--force',
+      '--git',
+      'https://github.com/makepad/makepad.git',
+      '--branch',
+      'dev',
+      'cargo-makepad',
+    ]);
+  }, 3, 5000, (attempt, err) => {
+    console.warn(`❌ Attempt ${attempt} to install cargo-makepad failed:`, err);
+    console.log('⏳ Retrying...');
+  });
+
+  // 3. Verify installation
+  const verify = isCommandAvailable('cargo-makepad');
+  if (!verify.installed) {
+    throw new Error('Failed to install cargo-makepad.');
+  }
+
+  // 4. Update packaging tools info
+  console.log('✅ cargo-makepad installed successfully.');
+  packaging_tools_info.cargo_makepad_info.installed = verify.installed;
+  packaging_tools_info.cargo_makepad_info.path = verify.path;
+
+  return packaging_tools_info;
+}
 
 async function buildDesktopArtifacts(): Promise<Artifact[]> {
-  const desktopDeps = await checkAndInstallDesktopDependencies();
-  console.log('Desktop build dependencies:', desktopDeps);
+  console.log('Building for desktop...');
   return [];
 }
 
-async function buildMobileArtifacts(mobile_target: MobileTarget): Promise<Artifact[]> {
-  const mobileDeps = await checkAndInstallMobileDependencies(mobile_target);
-  console.log('Mobile build dependencies:', mobileDeps);
+async function buildMobileArtifacts(target_info: TargetInfo): Promise<Artifact[]> {
+  console.log('Building for mobile...');
+  const { target_platform, arch } = target_info as { target_platform: MobileTarget, arch: TargetArch };
+  
+  if (target_platform === 'android') {
+    // Ensure Android build dependencies are installed
+    await installAndroidBuildDependencies(arch);
+    return [];
+  }
+
+  if (target_platform === 'ios') {
+    return [];
+  }
+
   return [];
 }

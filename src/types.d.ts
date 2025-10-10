@@ -26,11 +26,3 @@ export interface DesktopBuildDependencies {
     path?: string;
   }
 }
-
-export interface MobileBuildDependencies {
-  cargo_makepad_info: {
-    installed: boolean;
-    toolchain_installed: boolean;
-    path?: string;
-  }
-}
