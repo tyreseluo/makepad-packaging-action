@@ -185,7 +185,6 @@ export function execCommand(
     let matched = false;
 
     const child = spawn(cmd, args, {
-      shell: true,
       stdio: ['inherit', 'pipe', 'pipe'],
       cwd: options.cwd,
     });
