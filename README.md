@@ -22,9 +22,7 @@ Note: that due to platform restrictions, you can currently only build:
 * iOS apps on a macOS machine.
 * Android, on a machine with any OS!
 
-## Action Design (Draft)
-
-This section describes the planned action interface and behavior. It is a design draft; implementation is in progress.
+## Action Reference
 
 ### Goals
 
@@ -33,7 +31,7 @@ This section describes the planned action interface and behavior. It is a design
 - Sensible defaults sourced from `Cargo.toml`
 - Matrix-friendly usage (pass `args` to target specific triples)
 
-### Inputs (current)
+### Inputs
 
 These inputs are already defined in `action.yaml`:
 
@@ -53,7 +51,7 @@ These inputs are already defined in `action.yaml`:
 - `include_release`: include release build (default: `true`)
 - `include_debug`: include debug build (default: `false`)
 
-### Environment variables (current)
+### Environment variables
 
 Mobile and signing configuration is provided via env vars only:
 
@@ -100,26 +98,22 @@ If you have multiple signing identities or profiles, set `MAKEPAD_IOS_PROFILE` a
 `MAKEPAD_IOS_CERT` (or provide `APPLE_SIGNING_IDENTITY` so the action can select the right cert).
 The action uses `--device=iPhone` for device builds.
 
-### Inputs (planned additions)
-
-Web:
-
-- `wasm_profile`: `release` | `debug`
-
-### Outputs (current)
+### Outputs
 
 - `artifacts`: JSON array of `{ path, platform, arch, mode, version }`
 - `app_name`: resolved app name
 - `app_version`: resolved version
 - `release_url`: GitHub Release URL (if created)
 
-### Behavior (current)
+### Behavior
 
 - Determine target from `args` (`--target`), else default to host platform
+- Mobile builds require a target triple (e.g. `aarch64-linux-android`, `aarch64-apple-ios`)
 - Resolve app metadata from `Cargo.toml` unless overridden
 - Install packaging tools per target (`cargo-packager`, `cargo-makepad`)
 - Build artifacts and collect outputs into a normalized list
 - If `tagName` provided, create/update a GitHub Release and upload artifacts
+- Release upload requires a token with `contents: write` permission
 
 ### Placeholder replacement
 
@@ -131,7 +125,7 @@ For iOS device builds, supply certificate and provisioning profile via env vars.
 When `MAKEPAD_IOS_PROFILE`/`MAKEPAD_IOS_CERT` are omitted, the action will install and extract them.
 
 ```yaml
-- uses: tyreseluo/makepad-packaging-action@main
+- uses: Project-Robius-China/makepad-packaging-action@main
   env:
     APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
     APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
@@ -141,10 +135,10 @@ When `MAKEPAD_IOS_PROFILE`/`MAKEPAD_IOS_CERT` are omitted, the action will insta
     args: --target aarch64-apple-ios
 ```
 
-### Example: matrix release (tauri-style)
+### Example: matrix release
 
 ```yaml
-- uses: tyreseluo/makepad-packaging-action@v1
+- uses: Project-Robius-China/makepad-packaging-action@v1
   env:
     GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
   with:
@@ -159,7 +153,7 @@ When `MAKEPAD_IOS_PROFILE`/`MAKEPAD_IOS_CERT` are omitted, the action will insta
 ### Example: Android only
 
 ```yaml
-- uses: tyreseluo/makepad-packaging-action@v1
+- uses: Project-Robius-China/makepad-packaging-action@v1
   with:
     args: --target aarch64-linux-android
 ```
@@ -171,3 +165,7 @@ When `MAKEPAD_IOS_PROFILE`/`MAKEPAD_IOS_CERT` are omitted, the action will insta
 - iOS packaging: implemented (app bundle, optional IPA)
 - Web packaging: not implemented yet
 - Release upload: implemented
+
+### Roadmap
+
+- Web packaging (`wasm_profile`)

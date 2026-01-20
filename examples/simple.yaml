@@ -1,12 +1,52 @@
-name: Build Makepad Desktop
+name: Build Makepad (All Platforms)
 
 on:
-  push:
-    branches:
-      - main
+  workflow_dispatch:
+    inputs:
+      build_desktop:
+        description: "Build desktop packages"
+        type: boolean
+        default: true
+      build_android:
+        description: "Build Android APK"
+        type: boolean
+        default: true
+      build_ios:
+        description: "Build iOS app"
+        type: boolean
+        default: true
+      release_tag:
+        description: "Release tag (optional, supports __VERSION__)"
+        type: string
+        default: ""
+      release_name:
+        description: "Release name (optional, supports __VERSION__)"
+        type: string
+        default: ""
+      release_body:
+        description: "Release body (optional)"
+        type: string
+        default: ""
+      release_draft:
+        description: "Create draft release"
+        type: boolean
+        default: false
+      prerelease:
+        description: "Mark as prerelease"
+        type: boolean
+        default: false
+      args:
+        description: "Extra args passed to the action"
+        type: string
+        default: ""
+
+permissions:
+  contents: write
 
 jobs:
-  build:
+  desktop:
+    name: Desktop
+    if: ${{ inputs.build_desktop }}
     strategy:
       fail-fast: false
       matrix:
@@ -20,10 +60,10 @@ jobs:
 
     runs-on: ${{ matrix.os }}
     steps:
-      - name: Checkout Repository
+      - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Install Rust Stable
+      - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
       - name: Install Linux dependencies
@@ -32,14 +72,67 @@ jobs:
           sudo apt-get update
           sudo apt-get install libssl-dev pkg-config llvm clang libclang-dev binfmt-support libxcursor-dev libx11-dev libasound2-dev libpulse-dev libwayland-dev libxkbcommon-dev
 
-      - uses: ./
+      - name: Package (desktop)
+        uses: Project-Robius-China/makepad-packaging-action@main
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
+          args: ${{ inputs.args }}
           packager_formats: ${{ matrix.packager_formats }}
-          packager_args: --verbose
-          tagName: app-v__VERSION__
-          releaseName: "App v__VERSION__"
-          releaseBody: "See the assets to download this version and install."
-          releaseDraft: true
-          prerelease: false
+          tagName: ${{ inputs.release_tag }}
+          releaseName: ${{ inputs.release_name }}
+          releaseBody: ${{ inputs.release_body }}
+          releaseDraft: ${{ inputs.release_draft || false }}
+          prerelease: ${{ inputs.prerelease || false }}
+
+  android:
+    name: Android
+    if: ${{ inputs.build_android }}
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Package (android)
+        uses: Project-Robius-China/makepad-packaging-action@main
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          args: --target aarch64-linux-android ${{ inputs.args }}
+          tagName: ${{ inputs.release_tag }}
+          releaseName: ${{ inputs.release_name }}
+          releaseBody: ${{ inputs.release_body }}
+          releaseDraft: ${{ inputs.release_draft || false }}
+          prerelease: ${{ inputs.prerelease || false }}
+
+  ios:
+    name: iOS
+    if: ${{ inputs.build_ios }}
+    runs-on: macos-14
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Package (iOS)
+        uses: Project-Robius-China/makepad-packaging-action@main
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          MAKEPAD_IOS_ORG: com.example
+          MAKEPAD_IOS_APP: ExampleApp
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }} # base64
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_PROVISIONING_PROFILE: ${{ secrets.APPLE_PROVISIONING_PROFILE }} # base64
+          APPLE_KEYCHAIN_PASSWORD: ${{ secrets.APPLE_KEYCHAIN_PASSWORD }} # You can set any temporary password you like.
+        with:
+          args: --target aarch64-apple-ios ${{ inputs.args }}
+          tagName: ${{ inputs.release_tag }}
+          releaseName: ${{ inputs.release_name }}
+          releaseBody: ${{ inputs.release_body }}
+          releaseDraft: ${{ inputs.release_draft || false }}
+          prerelease: ${{ inputs.prerelease || false }}
