@@ -21,6 +21,9 @@ export function getTargetInfo(triple?: string): TargetInfo {
     if (triple.includes('android')) {
       target_platform = 'android';
       type = 'mobile';
+    } else if (triple.includes('ohos') || triple.includes('openharmony')) {
+      target_platform = 'ohos';
+      type = 'mobile';
     } else if (triple.includes('ios')) {
       target_platform = 'ios';
       type = 'mobile';

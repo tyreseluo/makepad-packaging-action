@@ -9,6 +9,7 @@ inputs:
   args:
     description: 'Arguments for the `cargo build <args>` and `cargo makepad <args>` commands. For example, `--release --target x86_64-pc-windows-msvc`.'
 
+
   packager_formats:
     description: 'Comma-separated formats for `cargo packager` (e.g., deb,dmg,nsis).'
 

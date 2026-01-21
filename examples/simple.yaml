@@ -15,6 +15,10 @@ on:
         description: "Build iOS app"
         type: boolean
         default: true
+      build_openharmony:
+        description: "Build OpenHarmony HAP"
+        type: boolean
+        default: false
       release_tag:
         description: "Release tag (optional, supports __VERSION__)"
         type: string
@@ -131,6 +135,35 @@ jobs:
           APPLE_KEYCHAIN_PASSWORD: ${{ secrets.APPLE_KEYCHAIN_PASSWORD }} # You can set any temporary password you like.
         with:
           args: --target aarch64-apple-ios ${{ inputs.args }}
+          tagName: ${{ inputs.release_tag }}
+          releaseName: ${{ inputs.release_name }}
+          releaseBody: ${{ inputs.release_body }}
+          releaseDraft: ${{ inputs.release_draft || false }}
+          prerelease: ${{ inputs.prerelease || false }}
+
+  openharmony:
+    name: OpenHarmony
+    if: ${{ inputs.build_openharmony }}
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Package (OpenHarmony)
+        uses: Project-Robius-China/makepad-packaging-action@main
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          OHOS_P12_BASE64: ${{ secrets.OHOS_P12_BASE64 }}
+          OHOS_PROFILE_BASE64: ${{ secrets.OHOS_PROFILE_BASE64 }}
+          OHOS_P12_PASSWORD: ${{ secrets.OHOS_P12_PASSWORD }}
+          OHOS_KEY_ALIAS: ${{ secrets.OHOS_KEY_ALIAS }}
+          OHOS_KEY_PASSWORD: ${{ secrets.OHOS_KEY_PASSWORD }}
+          OHOS_CERT_BASE64: ${{ secrets.OHOS_CERT_BASE64 }}
+        with:
+          args: --target aarch64-unknown-linux-ohos
           tagName: ${{ inputs.release_tag }}
           releaseName: ${{ inputs.release_name }}
           releaseBody: ${{ inputs.release_body }}
