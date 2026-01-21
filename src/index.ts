@@ -207,21 +207,45 @@ async function ensureRelease(params: {
   const octokit = github.getOctokit(token);
   const { owner, repo } = github.context.repo;
 
-  const getReleaseByTag = async (): Promise<{ id: number; html_url: string; name?: string | null; body?: string | null; draft?: boolean; prerelease?: boolean } | null> => {
+  type ReleaseSummary = {
+    id: number;
+    html_url: string;
+    name?: string | null;
+    body?: string | null;
+    draft?: boolean;
+    prerelease?: boolean;
+    tag_name?: string | null;
+    created_at?: string | null;
+  };
+
+  const mapRelease = (release: {
+    id: number;
+    html_url: string;
+    name?: string | null;
+    body?: string | null;
+    draft?: boolean;
+    prerelease?: boolean;
+    tag_name?: string | null;
+    created_at?: string | null;
+  }): ReleaseSummary => ({
+    id: release.id,
+    html_url: release.html_url,
+    name: release.name,
+    body: release.body,
+    draft: release.draft,
+    prerelease: release.prerelease,
+    tag_name: release.tag_name,
+    created_at: release.created_at,
+  });
+
+  const getReleaseByTag = async (): Promise<ReleaseSummary | null> => {
     try {
       const existing = await octokit.rest.repos.getReleaseByTag({
         owner,
         repo,
         tag: tagName,
       });
-      return {
-        id: existing.data.id,
-        html_url: existing.data.html_url,
-        name: existing.data.name,
-        body: existing.data.body,
-        draft: existing.data.draft,
-        prerelease: existing.data.prerelease,
-      };
+      return mapRelease(existing.data);
     } catch (error) {
       const status = (error as { status?: number }).status;
       if (status === 404) {
@@ -231,7 +255,38 @@ async function ensureRelease(params: {
     }
   };
 
-  const existing = await getReleaseByTag();
+  const findReleaseByTag = async (): Promise<ReleaseSummary | null> => {
+    const direct = await getReleaseByTag();
+    if (direct) {
+      return direct;
+    }
+
+    const releases = await octokit.paginate(octokit.rest.repos.listReleases, {
+      owner,
+      repo,
+      per_page: 100,
+    });
+    const matches = releases
+      .filter((release) => release.tag_name === tagName)
+      .map((release) => mapRelease(release));
+
+    if (matches.length === 0) {
+      return null;
+    }
+
+    if (matches.length > 1) {
+      matches.sort((a, b) => {
+        const aTime = a.created_at ? Date.parse(a.created_at) : 0;
+        const bTime = b.created_at ? Date.parse(b.created_at) : 0;
+        return aTime - bTime;
+      });
+      core.warning(`Multiple releases found for tag ${tagName}; using the earliest one.`);
+    }
+
+    return matches[0];
+  };
+
+  const existing = await findReleaseByTag();
   if (existing) {
     const shouldUpdate = Boolean(releaseName || releaseBody);
     if (!shouldUpdate) {
@@ -252,6 +307,18 @@ async function ensureRelease(params: {
   }
 
   try {
+    const maybeExisting = await retry(async () => {
+      const release = await findReleaseByTag();
+      if (!release) {
+        throw new Error('Release not visible yet.');
+      }
+      return release;
+    }, 2, 750).catch(() => null);
+
+    if (maybeExisting) {
+      return { id: maybeExisting.id, html_url: maybeExisting.html_url };
+    }
+
     const created = await octokit.rest.repos.createRelease({
       owner,
       repo,
@@ -267,7 +334,7 @@ async function ensureRelease(params: {
     const status = (error as { status?: number }).status;
     if (status === 422) {
       const resolved = await retry(async () => {
-        const release = await getReleaseByTag();
+        const release = await findReleaseByTag();
         if (!release) {
           throw new Error('Release not visible yet.');
         }
