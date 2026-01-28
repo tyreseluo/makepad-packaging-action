@@ -266,8 +266,6 @@ async function run(): Promise<void> {
   }
 }
 
-await run();
-
 function normalizeInput(value?: string): string | undefined {
   if (value === undefined) return undefined;
   const trimmed = value.trim();
@@ -925,3 +923,5 @@ async function uploadReleaseAssets(params: {
     });
   }
 }
+
+await run();
