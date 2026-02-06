@@ -38,7 +38,7 @@ These inputs are already defined in `action.yaml`:
 - `args`: extra args passed to build commands (e.g. `--release --target x86_64-unknown-linux-gnu`)
 - `packager_formats`: comma-separated formats for `cargo packager` (e.g. `deb,dmg,nsis`)
 - `packager_args`: extra args passed only to `cargo packager`
-- `tagName`: GitHub Release tag, supports `__VERSION__` placeholder
+- `tagName`: GitHub Release tag, supports `__VERSION__` placeholder. If omitted and the workflow runs on a tag ref, that tag is used.
 - `releaseName`: Release title, supports `__VERSION__` placeholder
 - `releaseBody`: Release body markdown
 - `releaseId`: existing GitHub Release ID (uploads assets to this release and skips release creation)

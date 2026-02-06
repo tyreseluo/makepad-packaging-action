@@ -83,7 +83,12 @@ async function run(): Promise<void> {
     const ohos_signing_key_password = getEnvValue('OHOS_KEY_PASSWORD');
     const ohos_signing_sign_alg = getEnvValue('OHOS_SIGN_ALG');
 
-    const tag_name_input = normalizeInput(core.getInput('tagName'));
+    const tag_name_input_raw = normalizeInput(core.getInput('tagName'));
+    const tag_name_from_ref = deriveTagNameFromRef(github.context.ref);
+    const tag_name_input = tag_name_input_raw ?? tag_name_from_ref;
+    if (!tag_name_input_raw && tag_name_from_ref) {
+      core.info(`tagName not provided; using ref tag "${tag_name_from_ref}".`);
+    }
     const release_name_input = normalizeInput(core.getInput('releaseName'));
     const release_body_input = normalizeInput(core.getInput('releaseBody'));
     const release_id_input = normalizeInput(core.getInput('releaseId'));
@@ -188,7 +193,10 @@ async function run(): Promise<void> {
     }
     core.setOutput('artifacts', JSON.stringify(artifacts));
 
-    if (!tag_name_input && !has_release_id && (release_name_input || release_body_input)) {
+    const release_metadata_provided = Boolean(
+      release_name_input || release_body_input || release_draft || prerelease
+    );
+    if (!tag_name_input && !has_release_id && release_metadata_provided) {
       core.warning('Release inputs provided without tagName; release upload skipped.');
     }
 
@@ -198,7 +206,7 @@ async function run(): Promise<void> {
         throw new Error('GITHUB_TOKEN (or github_token input) is required for release upload.');
       }
 
-      if (tag_name_input || release_name_input || release_body_input) {
+      if (tag_name_input_raw || release_name_input || release_body_input) {
         core.info(
           'releaseId provided; tagName/releaseName/releaseBody inputs are ignored for release creation.',
         );
@@ -326,6 +334,17 @@ function normalizeTagName(tagName: string): string {
     return trimmed.slice('tags/'.length);
   }
   return trimmed;
+}
+
+function deriveTagNameFromRef(ref?: string | null): string | undefined {
+  if (!ref) return undefined;
+  if (ref.startsWith('refs/tags/')) {
+    return ref.slice('refs/tags/'.length);
+  }
+  if (ref.startsWith('tags/')) {
+    return ref.slice('tags/'.length);
+  }
+  return undefined;
 }
 
 function sleep(ms: number): Promise<void> {
