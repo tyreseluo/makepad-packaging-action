@@ -206,8 +206,9 @@ function resolvePackagerOutDir(
   manifest: Record<string, any>,
 ): string {
   const out_dir = manifest?.package?.metadata?.packager?.out_dir;
-  if (typeof out_dir === 'string' && out_dir.trim().length > 0) {
-    return isAbsolute(out_dir) ? out_dir : join(root, out_dir);
+  const out_dir_text = typeof out_dir === 'string' ? out_dir.trim() : '';
+  if (out_dir_text.length > 0) {
+    return isAbsolute(out_dir_text) ? out_dir_text : join(root, out_dir_text);
   }
 
   return join(root, 'dist');

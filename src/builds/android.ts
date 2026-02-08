@@ -162,10 +162,10 @@ function resolveAndroidAbi(requested: AndroidABI | undefined, arch: TargetArch):
 }
 
 function sanitizeAndroidPackageName(identifier: string): { value: string; changed: boolean } {
-  const original = identifier;
-  const parts = identifier
+  const original = String(identifier ?? '');
+  const parts = original
     .split('.')
-    .map((part) => part.trim())
+    .map((part) => String(part).trim())
     .filter(Boolean)
     .map((part) => {
       let normalized = part.replace(/-/g, '_').replace(/[^A-Za-z0-9_]/g, '_');

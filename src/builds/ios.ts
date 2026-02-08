@@ -256,7 +256,7 @@ async function ensureIosSigning(params: {
   const decoded_profile = await execCommand('security', ['cms', '-D', '-i', profile_path], { captureOutput: true });
   writeFileSync(profile_plist_path, decoded_profile.output);
   const uuid_output = await execCommand('/usr/libexec/PlistBuddy', ['-c', 'Print UUID', profile_plist_path], { captureOutput: true });
-  const profile_uuid = uuid_output.output.trim().split('\n').pop()?.trim();
+  const profile_uuid = String(uuid_output.output ?? '').trim().split('\n').pop()?.trim();
 
   if (!profile_uuid) {
     throw new Error('Failed to read UUID from provisioning profile.');
@@ -293,6 +293,7 @@ async function resolveSigningFingerprint(keychainPath: string, signingIdentity?:
 }
 
 function extractFingerprint(output: string): string | undefined {
-  const match = output.match(/SHA-1 hash:\s*([A-F0-9]+)/i) || output.match(/SHA-1:\s*([A-F0-9]+)/i);
+  const text = String(output ?? '');
+  const match = text.match(/SHA-1 hash:\s*([A-F0-9]+)/i) || text.match(/SHA-1:\s*([A-F0-9]+)/i);
   return match?.[1]?.trim();
 }

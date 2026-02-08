@@ -299,14 +299,25 @@ async function run(): Promise<void> {
     console.log(`Found artifacts:\n${artifacts.map((a) => a.path).join('\n')}`);
 
   } catch (error) {
-    //@ts-expect-error
-    core.setFailed(error.message);
+    if (error instanceof Error) {
+      core.error(error.stack ?? error.message);
+      core.setFailed(error.message);
+      return;
+    }
+    const fallback = String(error);
+    core.error(fallback);
+    core.setFailed(fallback);
   }
 }
 
+function trimToString(value: unknown): string {
+  if (value === undefined || value === null) return '';
+  if (typeof value === 'string') return value.trim();
+  return String(value).trim();
+}
+
 function normalizeInput(value?: string): string | undefined {
-  if (value === undefined) return undefined;
-  const trimmed = value.trim();
+  const trimmed = trimToString(value);
   return trimmed.length > 0 ? trimmed : undefined;
 }
 
@@ -315,8 +326,8 @@ function getEnvValue(name: string): string | undefined {
 }
 
 function parseEnvBool(value?: string): boolean {
-  if (!value) return false;
-  const normalized = value.trim().toLowerCase();
+  const normalized = trimToString(value).toLowerCase();
+  if (!normalized) return false;
   return normalized === 'true' || normalized === '1' || normalized === 'yes';
 }
 
@@ -326,7 +337,7 @@ function replaceVersion(input: string, version?: string): string {
 }
 
 function normalizeTagName(tagName: string): string {
-  const trimmed = tagName.trim();
+  const trimmed = trimToString(tagName);
   if (trimmed.startsWith('refs/tags/')) {
     return trimmed.slice('refs/tags/'.length);
   }
@@ -805,8 +816,7 @@ function getExtensionInfo(filePath: string): { raw: string; lower: string } {
 }
 
 function sanitizeAssetNamePart(value?: string | null): string | undefined {
-  if (!value) return undefined;
-  const trimmed = value.trim();
+  const trimmed = trimToString(value);
   if (!trimmed) return undefined;
   const sanitized = trimmed
     .replace(/[^A-Za-z0-9._-]+/g, '-')
@@ -816,7 +826,7 @@ function sanitizeAssetNamePart(value?: string | null): string | undefined {
 }
 
 function normalizeAssetName(name: string): string {
-  return name.trim().replace(/[\\/]+/g, '-').replace(/\s+/g, '-');
+  return trimToString(name).replace(/[\\/]+/g, '-').replace(/\s+/g, '-');
 }
 
 function applyTemplate(template: string, values: Record<string, string>): string {
