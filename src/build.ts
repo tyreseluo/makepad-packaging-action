@@ -214,6 +214,98 @@ function resolvePackagerOutDir(
   return join(root, 'dist');
 }
 
+function parseTargetTripleFromArgs(args: string[]): string | undefined {
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i];
+    if (arg === '--target' || arg === '-t') {
+      const next = args[i + 1];
+      if (next && !next.startsWith('-')) {
+        return next;
+      }
+    }
+    if (arg.startsWith('--target=')) {
+      const value = arg.slice('--target='.length).trim();
+      if (value.length > 0) {
+        return value;
+      }
+    }
+  }
+  return undefined;
+}
+
+function readBeforeEachPackageCommand(manifest: Record<string, any>): string | undefined {
+  const packager = manifest?.package?.metadata?.packager as Record<string, any> | undefined;
+  if (!packager) {
+    return undefined;
+  }
+  const command =
+    packager.before_each_package_command ??
+    packager['before-each-package-command'];
+  return typeof command === 'string' ? command : undefined;
+}
+
+function parsePathToBinaryArg(command: string): string | undefined {
+  const match = command.match(/--path-to-binary(?:=|\s+)(?:"([^"]+)"|'([^']+)'|([^\s]+))/);
+  if (!match) {
+    return undefined;
+  }
+  return match[1] ?? match[2] ?? match[3];
+}
+
+function assertNoLikelyPackagerTargetMismatch(
+  root: string,
+  args: string[],
+): void {
+  const targetTriple = parseTargetTripleFromArgs(args);
+  if (!targetTriple) {
+    return;
+  }
+
+  const manifest = parse_manifest_toml(root) as Record<string, any> | null;
+  if (!manifest) {
+    return;
+  }
+
+  const beforeEachCommand = readBeforeEachPackageCommand(manifest);
+  if (!beforeEachCommand) {
+    return;
+  }
+
+  const lowerCommand = beforeEachCommand.toLowerCase();
+  const usesRobiusBeforeEach =
+    lowerCommand.includes('robius-packaging-commands') &&
+    (lowerCommand.includes('before-each-package') || lowerCommand.includes('before_each_package'));
+  if (!usesRobiusBeforeEach) {
+    return;
+  }
+
+  const pathToBinary = parsePathToBinaryArg(beforeEachCommand);
+  if (!pathToBinary) {
+    return;
+  }
+
+  // Likely mismatch pattern:
+  //   - Action is called with --target <triple>
+  //   - before-each-package command still points to ../target/release/<bin>
+  //     (without target triple path segment)
+  const normalizedPath = pathToBinary.replace(/\\/g, '/').toLowerCase();
+  const hasPlainReleasePath = normalizedPath.includes('/target/release/');
+  const hasTargetTripleInPath = normalizedPath.includes(`/target/${targetTriple.toLowerCase()}/release/`);
+  if (hasPlainReleasePath && !hasTargetTripleInPath) {
+    throw new Error(
+      [
+        'Detected likely cargo-packager target path mismatch.',
+        `You passed '--target ${targetTriple}', but package.metadata.packager.before_each_package_command uses '--path-to-binary ${pathToBinary}'.`,
+        'This usually causes cargo-packager to search target/<triple>/release/<binary> while before-each-package builds into target/release/<binary>, resulting in an unclear I/O path error.',
+        'Fix one of the following:',
+        '1) On native runners, remove --target from action args.',
+        `2) Update --path-to-binary to include target triple, e.g. ../target/${targetTriple}/release/<binary>.`,
+        '3) Ensure your before-each-package build command uses the same target triple.',
+      ].join('\n')
+    );
+  }
+}
+
 function isDesktopArtifactFile(filename: string): boolean {
   const lower = filename.toLowerCase();
   const suffixes = [
@@ -273,6 +365,8 @@ async function buildDesktopArtifacts(
   const args = buildOptions.args ?? [];
   const packager_args = buildOptions.packager_args ?? [];
   const packager_formats = buildOptions.packager_formats ?? [];
+
+  assertNoLikelyPackagerTargetMismatch(root, args);
 
   const packager_cli_args = [...args, ...packager_args];
   const has_formats_arg = packager_cli_args.some((arg) => arg.startsWith('--formats'));
