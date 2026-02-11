@@ -26,7 +26,7 @@ Note: that due to platform restrictions, you can currently only build:
 
 ### Goals
 
-- One-step packaging for Makepad desktop, mobile, and web targets
+- One-step packaging for Makepad desktop and mobile targets
 - GitHub Release upload with optional tag/name/body templating
 - Sensible defaults sourced from `Cargo.toml`
 - Matrix-friendly usage (pass `args` to target specific triples)
@@ -122,6 +122,9 @@ To upload to TestFlight, set `MAKEPAD_IOS_UPLOAD_TESTFLIGHT=true` and provide:
 - `APP_STORE_CONNECT_KEY_ID`
 - `APP_STORE_CONNECT_ISSUER_ID`
 
+When TestFlight upload is enabled, the action requires a device build (`MAKEPAD_IOS_SIM=false`)
+and automatically forces `MAKEPAD_IOS_CREATE_IPA=true`.
+
 ### Outputs
 
 - `artifacts`: JSON array of `{ path, platform, arch, mode, version }`
@@ -156,7 +159,7 @@ For iOS device builds, supply certificate and provisioning profile via env vars.
 When `MAKEPAD_IOS_PROFILE`/`MAKEPAD_IOS_CERT` are omitted, the action will install and extract them.
 
 ```yaml
-- uses: Project-Robius-China/makepad-packaging-action@main
+- uses: project-robius/makepad-packaging-action@main
   env:
     APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
     APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
@@ -169,7 +172,7 @@ When `MAKEPAD_IOS_PROFILE`/`MAKEPAD_IOS_CERT` are omitted, the action will insta
 ### Example: matrix release
 
 ```yaml
-- uses: Project-Robius-China/makepad-packaging-action@v1
+- uses: project-robius/makepad-packaging-action@v1
   env:
     GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
   with:
@@ -179,6 +182,7 @@ When `MAKEPAD_IOS_PROFILE`/`MAKEPAD_IOS_CERT` are omitted, the action will insta
     releaseDraft: true
     prerelease: false
     args: ${{ matrix.args }}
+```
 
 ### Example: upload to an existing release
 
@@ -186,7 +190,7 @@ Create the release once, then pass its ID to every build job so assets land on t
 
 ```yaml
 jobs:
-  create-release:
+  create_release:
     runs-on: ubuntu-22.04
     outputs:
       release_id: ${{ steps.create_release.outputs.id }}
@@ -199,22 +203,21 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   package:
-    needs: create-release
+    needs: create_release
     runs-on: ubuntu-22.04
     steps:
-      - uses: Project-Robius-China/makepad-packaging-action@v1
+      - uses: project-robius/makepad-packaging-action@v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          releaseId: ${{ needs.create-release.outputs.release_id }}
+          releaseId: ${{ needs.create_release.outputs.release_id }}
           args: --target aarch64-linux-android
-```
 ```
 
 ### Example: Android only
 
 ```yaml
-- uses: Project-Robius-China/makepad-packaging-action@v1
+- uses: project-robius/makepad-packaging-action@v1
   with:
     args: --target aarch64-linux-android
 ```
