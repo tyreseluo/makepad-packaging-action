@@ -19,7 +19,9 @@ import {
   ensureRelease,
   getReleaseById,
   uploadReleaseAssets,
+  uploadUpdaterJson,
 } from './release';
+import type { ReleaseSummary } from './release';
 
 
 /**
@@ -87,6 +89,7 @@ async function run(): Promise<void> {
     const release_name_input = normalizeInput(core.getInput('releaseName'));
     const release_body_input = normalizeInput(core.getInput('releaseBody'));
     const release_id_input = normalizeInput(core.getInput('releaseId'));
+    const upload_updater_json = core.getBooleanInput('upload_updater_json');
     const asset_name_template = normalizeInput(core.getInput('asset_name_template'));
     const asset_prefix = normalizeInput(core.getInput('asset_prefix'));
     const release_draft = core.getBooleanInput('releaseDraft');
@@ -106,6 +109,7 @@ async function run(): Promise<void> {
     if (ios_cargo_extra_args.length > 0) {
       core.info(`MAKEPAD_IOS_CARGO_EXTRA_ARGS enabled: ${ios_cargo_extra_args.length} token(s).`);
     }
+    core.info(`Updater JSON upload enabled=${upload_updater_json}.`);
 
     if (ios_upload_testflight) {
       if (ios_sim) {
@@ -231,18 +235,20 @@ async function run(): Promise<void> {
 
       const octokit = github.getOctokit(github_token);
       const { owner, repo } = github.context.repo;
+      let releaseSummary: ReleaseSummary | null = null;
       try {
-        const release = await getReleaseById(octokit, owner, repo, releaseId);
-        if (release) {
-          core.setOutput('release_url', release.html_url);
+        releaseSummary = await getReleaseById(octokit, owner, repo, releaseId);
+        if (releaseSummary) {
+          core.setOutput('release_url', releaseSummary.html_url);
         }
       } catch (error) {
         core.warning(`Failed to fetch release ${release_id_input}: ${(error as Error).message}`);
       }
 
+      let uploadedAssets: Awaited<ReturnType<typeof uploadReleaseAssets>> = [];
       if (artifacts.length > 0) {
         core.info(`Uploading ${artifacts.length} artifact(s) to release id=${releaseId}...`);
-        await uploadReleaseAssets({
+        uploadedAssets = await uploadReleaseAssets({
           token: github_token,
           releaseId,
           artifacts,
@@ -250,6 +256,19 @@ async function run(): Promise<void> {
           assetPrefix: asset_prefix,
           appName: resolved_app_name,
           appVersion: resolved_app_version,
+        });
+      }
+
+      if (upload_updater_json && uploadedAssets.length > 0) {
+        core.info(`Uploading updater JSON (latest.json) to release id=${releaseId}...`);
+        await uploadUpdaterJson({
+          token: github_token,
+          releaseId,
+          appVersion: resolved_app_version,
+          releaseTagName: releaseSummary?.tag_name,
+          releaseBody: releaseSummary?.body,
+          releaseCreatedAt: releaseSummary?.created_at,
+          uploadedAssets,
         });
       }
     } else if (tag_name_input) {
@@ -279,9 +298,19 @@ async function run(): Promise<void> {
 
       core.setOutput('release_url', release.html_url);
 
+      const octokit = github.getOctokit(github_token);
+      const { owner, repo } = github.context.repo;
+      let releaseSummary: ReleaseSummary | null = null;
+      try {
+        releaseSummary = await getReleaseById(octokit, owner, repo, release.id);
+      } catch (error) {
+        core.warning(`Failed to refresh release ${release.id} details: ${(error as Error).message}`);
+      }
+
+      let uploadedAssets: Awaited<ReturnType<typeof uploadReleaseAssets>> = [];
       if (artifacts.length > 0) {
         core.info(`Uploading ${artifacts.length} artifact(s) to release id=${release.id}...`);
-        await uploadReleaseAssets({
+        uploadedAssets = await uploadReleaseAssets({
           token: github_token,
           releaseId: release.id,
           artifacts,
@@ -289,6 +318,19 @@ async function run(): Promise<void> {
           assetPrefix: asset_prefix,
           appName: resolved_app_name,
           appVersion: resolved_app_version,
+        });
+      }
+
+      if (upload_updater_json && uploadedAssets.length > 0) {
+        core.info(`Uploading updater JSON (latest.json) to release id=${release.id}...`);
+        await uploadUpdaterJson({
+          token: github_token,
+          releaseId: release.id,
+          appVersion: resolved_app_version,
+          releaseTagName: releaseSummary?.tag_name ?? resolved_tag,
+          releaseBody: releaseSummary?.body ?? release_body,
+          releaseCreatedAt: releaseSummary?.created_at,
+          uploadedAssets,
         });
       }
 

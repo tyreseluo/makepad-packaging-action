@@ -42,6 +42,7 @@ These inputs are already defined in `action.yaml`:
 - `releaseName`: Release title, supports `__VERSION__` placeholder
 - `releaseBody`: Release body markdown
 - `releaseId`: existing GitHub Release ID (uploads assets to this release and skips release creation)
+- `upload_updater_json`: upload/update `latest.json` updater metadata asset on the release (default: `true`)
 - `asset_name_template`: template for asset names (`__APP__`, `__VERSION__`, `__PLATFORM__`, `__ARCH__`, `__MODE__`, `__EXT__`, `__FILENAME__`, `__BASENAME__`)
 - `asset_prefix`: optional prefix prepended to generated asset names
 - `releaseDraft`: create draft release (`true`/`false`)
@@ -147,6 +148,7 @@ and automatically forces `MAKEPAD_IOS_CREATE_IPA=true`.
 - Release upload filters to recommended formats per platform when available (e.g. macOS `.dmg`, iOS `.ipa`)
 - If an artifact is a directory (like `.app`), it is zipped before upload
 - Asset names default to a unique `app-version-platform-arch-mode.ext` pattern unless overridden
+- By default, release upload also creates/updates a `latest.json` asset (`version`, `notes`, `pub_date`, `platforms`) suitable for static updater metadata hosted on GitHub Releases CDN
 - Release upload requires a token with `contents: write` permission
 
 ### Placeholder replacement

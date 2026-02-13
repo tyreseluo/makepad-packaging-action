@@ -3,7 +3,7 @@ import * as github from '@actions/github';
 import { createReadStream, existsSync, mkdtempSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, dirname, extname, join } from 'node:path';
-import type { Artifact, TargetPlatform } from '../types';
+import type { Artifact, TargetArch, TargetPlatform } from '../types';
 import { execCommand, normalizeTagName, retry, sleep, trimToString } from '../utils';
 
 type Octokit = ReturnType<typeof github.getOctokit>;
@@ -20,6 +20,25 @@ export type ReleaseSummary = {
   prerelease?: boolean;
   tag_name?: string | null;
   created_at?: string | null;
+};
+
+type ReleaseAssetSummary = {
+  id: number;
+  name: string;
+  browser_download_url: string;
+};
+
+export type UploadedReleaseAsset = {
+  id: number;
+  name: string;
+  url: string;
+  artifact: Artifact;
+  uploadPath: string;
+};
+
+type UpdaterPlatformEntry = {
+  url: string;
+  signature?: string;
 };
 
 function mapRelease(release: {
@@ -102,6 +121,26 @@ async function listReleasesByTag(
   return releases
     .filter((release) => release.tag_name === tagName)
     .map((release) => mapRelease(release));
+}
+
+async function listReleaseAssets(
+  octokit: Octokit,
+  owner: string,
+  repo: string,
+  releaseId: number,
+): Promise<ReleaseAssetSummary[]> {
+  const assets = await octokit.paginate(octokit.rest.repos.listReleaseAssets, {
+    owner,
+    repo,
+    release_id: releaseId,
+    per_page: 100,
+  });
+
+  return assets.map((asset) => ({
+    id: asset.id,
+    name: asset.name,
+    browser_download_url: asset.browser_download_url,
+  }));
 }
 
 function sortByCreatedAt(releases: ReleaseSummary[]): ReleaseSummary[] {
@@ -582,7 +621,7 @@ export async function uploadReleaseAssets(params: {
   assetPrefix?: string;
   appName?: string;
   appVersion?: string;
-}): Promise<void> {
+}): Promise<UploadedReleaseAsset[]> {
   const { token, releaseId, artifacts, assetNameTemplate, assetPrefix, appName, appVersion } = params;
   const octokit = github.getOctokit(token);
   const { owner, repo } = github.context.repo;
@@ -600,17 +639,13 @@ export async function uploadReleaseAssets(params: {
     throw new Error(`Missing artifacts on disk:\n${missingArtifacts.join('\n')}`);
   }
 
-  const existingAssets = await octokit.rest.repos.listReleaseAssets({
-    owner,
-    repo,
-    release_id: releaseId,
-    per_page: 100,
-  });
+  const existingAssets = await listReleaseAssets(octokit, owner, repo, releaseId);
   const existingByName = new Map(
-    existingAssets.data.map((asset) => [asset.name, asset.id]),
+    existingAssets.map((asset) => [asset.name, asset.id]),
   );
 
   const usedNames = new Set<string>();
+  const uploadedAssets: UploadedReleaseAsset[] = [];
 
   for (const artifact of filteredArtifacts) {
     let uploadPath = artifact.path;
@@ -645,7 +680,7 @@ export async function uploadReleaseAssets(params: {
 
     const uploadStat = statSync(uploadPath);
     core.info(`Uploading asset "${assetName}" (${uploadStat.size} bytes)...`);
-    await octokit.rest.repos.uploadReleaseAsset({
+    const uploaded = await octokit.rest.repos.uploadReleaseAsset({
       owner,
       repo,
       release_id: releaseId,
@@ -656,5 +691,436 @@ export async function uploadReleaseAssets(params: {
         'content-length': uploadStat.size,
       },
     });
+
+    uploadedAssets.push({
+      id: uploaded.data.id,
+      name: uploaded.data.name,
+      url: uploaded.data.browser_download_url,
+      artifact,
+      uploadPath,
+    });
   }
+
+  return uploadedAssets;
+}
+
+type UpdaterPlatformName = 'windows' | 'linux' | 'darwin' | 'android' | 'ios';
+
+type UpdaterAssetCandidate = {
+  assetName: string;
+  url: string;
+  platform: UpdaterPlatformName;
+  arch: TargetArch;
+  format?: string;
+};
+
+type UpdaterJsonDocument = {
+  version: string;
+  notes: string;
+  pub_date: string;
+  platforms: Record<string, UpdaterPlatformEntry>;
+};
+
+const UPDATER_JSON_ASSET_NAME = 'latest.json';
+
+const UPDATER_FORMAT_PRIORITY: Record<UpdaterPlatformName, string[]> = {
+  windows: ['nsis', 'msi', 'exe'],
+  linux: ['deb', 'appimage', 'rpm'],
+  darwin: ['dmg', 'pkg', 'app'],
+  android: ['apk'],
+  ios: ['ipa'],
+};
+
+const SUPPORTED_UPDATER_FORMATS = new Set([
+  'nsis',
+  'msi',
+  'exe',
+  'deb',
+  'rpm',
+  'appimage',
+  'dmg',
+  'pkg',
+  'app',
+  'apk',
+  'ipa',
+  'zip',
+  'tar.gz',
+]);
+
+function isSignatureAssetName(name: string): boolean {
+  return trimToString(name).toLowerCase().endsWith('.sig');
+}
+
+function isUpdaterJsonAssetName(name: string): boolean {
+  return trimToString(name).toLowerCase() === UPDATER_JSON_ASSET_NAME;
+}
+
+function toUpdaterPlatformName(platform: TargetPlatform): UpdaterPlatformName {
+  return platform === 'macos' ? 'darwin' : platform;
+}
+
+function getLowerAssetSuffix(fileName: string): string {
+  const lower = fileName.toLowerCase();
+  if (lower.endsWith('.tar.gz')) {
+    return 'tar.gz';
+  }
+  return getExtensionInfo(fileName).lower;
+}
+
+function inferUpdaterFormat(fileName: string, platform?: TargetPlatform): string | undefined {
+  const lower = fileName.toLowerCase();
+  const suffix = getLowerAssetSuffix(fileName);
+  if (!suffix) return undefined;
+
+  if (suffix === 'exe') {
+    return platform === 'windows' ? 'nsis' : 'exe';
+  }
+
+  if (suffix === 'tar.gz') {
+    if (platform === 'macos' || /(^|[._-])app([._-]|$)/.test(lower)) {
+      return 'app';
+    }
+    return 'tar.gz';
+  }
+
+  return suffix;
+}
+
+function inferPlatformFromAssetName(fileName: string, format?: string): TargetPlatform | undefined {
+  const lower = fileName.toLowerCase();
+
+  if (
+    lower.includes('windows') ||
+    format === 'nsis' ||
+    format === 'msi' ||
+    lower.endsWith('.exe') ||
+    lower.endsWith('.msi')
+  ) {
+    return 'windows';
+  }
+
+  if (lower.includes('android') || lower.endsWith('.apk')) {
+    return 'android';
+  }
+
+  if (lower.includes('ios') || lower.endsWith('.ipa')) {
+    return 'ios';
+  }
+
+  if (
+    lower.includes('darwin') ||
+    lower.includes('macos') ||
+    format === 'dmg' ||
+    format === 'pkg' ||
+    format === 'app'
+  ) {
+    return 'macos';
+  }
+
+  if (
+    lower.includes('linux') ||
+    format === 'deb' ||
+    format === 'rpm' ||
+    format === 'appimage'
+  ) {
+    return 'linux';
+  }
+
+  return undefined;
+}
+
+function inferArchFromAssetName(fileName: string): TargetArch | undefined {
+  const lower = fileName.toLowerCase();
+  if (lower.includes('x86_64') || lower.includes('amd64') || lower.includes('x64')) {
+    return 'x86_64';
+  }
+  if (lower.includes('aarch64') || lower.includes('arm64')) {
+    return 'aarch64';
+  }
+  if (lower.includes('armv7') || lower.includes('armhf')) {
+    return 'armv7';
+  }
+  if (lower.includes('i686') || lower.includes('x86')) {
+    return 'i686';
+  }
+  return undefined;
+}
+
+function getUpdaterFormatPriority(platform: UpdaterPlatformName, format?: string): number {
+  if (!format) return Number.MAX_SAFE_INTEGER;
+  const list = UPDATER_FORMAT_PRIORITY[platform] ?? [];
+  const index = list.indexOf(format);
+  return index >= 0 ? index : Number.MAX_SAFE_INTEGER - 1;
+}
+
+function normalizeUpdaterPlatforms(value: unknown): Record<string, UpdaterPlatformEntry> {
+  const result: Record<string, UpdaterPlatformEntry> = {};
+  if (!value || typeof value !== 'object') {
+    return result;
+  }
+
+  for (const [key, item] of Object.entries(value as Record<string, unknown>)) {
+    if (!item || typeof item !== 'object') continue;
+    const obj = item as Record<string, unknown>;
+    const url = trimToString(obj.url);
+    if (!url) continue;
+    const signature = trimToString(obj.signature);
+    result[key] = signature ? { url, signature } : { url };
+  }
+
+  return result;
+}
+
+function resolveUpdaterVersion(
+  appVersion?: string,
+  releaseTagName?: string | null,
+  existingVersion?: string,
+): string {
+  const fromAppVersion = trimToString(appVersion);
+  if (fromAppVersion) return fromAppVersion;
+
+  const normalizedTag = normalizeTagName(trimToString(releaseTagName));
+  if (normalizedTag) {
+    return normalizedTag.startsWith('v') ? normalizedTag.slice(1) : normalizedTag;
+  }
+
+  const fromExisting = trimToString(existingVersion);
+  if (fromExisting) return fromExisting;
+
+  return '0.0.0';
+}
+
+function buildUpdaterCandidateFromReleaseAsset(
+  asset: ReleaseAssetSummary,
+  uploadedByName: Map<string, UploadedReleaseAsset>,
+): UpdaterAssetCandidate | null {
+  if (isUpdaterJsonAssetName(asset.name) || isSignatureAssetName(asset.name)) {
+    return null;
+  }
+
+  const uploaded = uploadedByName.get(asset.name);
+  let platform: TargetPlatform | undefined;
+  let arch: TargetArch | undefined;
+  let format: string | undefined;
+
+  if (uploaded) {
+    platform = uploaded.artifact.platform;
+    arch = uploaded.artifact.arch;
+    format = inferUpdaterFormat(uploaded.uploadPath, platform) ?? inferUpdaterFormat(asset.name, platform);
+  } else {
+    format = inferUpdaterFormat(asset.name);
+    platform = inferPlatformFromAssetName(asset.name, format);
+    arch = inferArchFromAssetName(asset.name);
+    if (platform && !format) {
+      format = inferUpdaterFormat(asset.name, platform);
+    }
+  }
+
+  if (!platform || !arch) {
+    return null;
+  }
+
+  if (!uploaded && (!format || !SUPPORTED_UPDATER_FORMATS.has(format))) {
+    return null;
+  }
+
+  return {
+    assetName: asset.name,
+    url: asset.browser_download_url,
+    platform: toUpdaterPlatformName(platform),
+    arch,
+    format,
+  };
+}
+
+async function downloadReleaseAssetText(url: string, token: string): Promise<string> {
+  const headers: Record<string, string> = {
+    Accept: 'application/octet-stream',
+  };
+  if (trimToString(token)) {
+    headers.Authorization = `Bearer ${token}`;
+  }
+
+  const response = await fetch(url, {
+    method: 'GET',
+    headers,
+    redirect: 'follow',
+  });
+
+  if (!response.ok) {
+    throw new Error(`Failed to download release asset (${response.status} ${response.statusText}).`);
+  }
+
+  return response.text();
+}
+
+export async function uploadUpdaterJson(params: {
+  token: string;
+  releaseId: number;
+  appVersion?: string;
+  releaseTagName?: string | null;
+  releaseBody?: string | null;
+  releaseCreatedAt?: string | null;
+  uploadedAssets?: UploadedReleaseAsset[];
+}): Promise<void> {
+  const {
+    token,
+    releaseId,
+    appVersion,
+    releaseTagName,
+    releaseBody,
+    releaseCreatedAt,
+    uploadedAssets,
+  } = params;
+
+  const octokit = github.getOctokit(token);
+  const { owner, repo } = github.context.repo;
+
+  const releaseAssets = await listReleaseAssets(octokit, owner, repo, releaseId);
+  const releaseAssetByName = new Map(releaseAssets.map((asset) => [asset.name, asset]));
+  const uploadedByName = new Map((uploadedAssets ?? []).map((asset) => [asset.name, asset]));
+
+  let existingPlatforms: Record<string, UpdaterPlatformEntry> = {};
+  let existingVersion: string | undefined;
+  let existingNotes: string | undefined;
+  let existingPubDate: string | undefined;
+
+  const existingUpdaterAsset = releaseAssetByName.get(UPDATER_JSON_ASSET_NAME);
+  if (existingUpdaterAsset) {
+    try {
+      const existingText = await downloadReleaseAssetText(existingUpdaterAsset.browser_download_url, token);
+      const parsed = JSON.parse(existingText) as Record<string, unknown>;
+      existingVersion = trimToString(parsed.version);
+      existingNotes = trimToString(parsed.notes);
+      existingPubDate = trimToString(parsed.pub_date);
+      existingPlatforms = normalizeUpdaterPlatforms(parsed.platforms);
+    } catch (error) {
+      core.warning(`Failed to parse existing ${UPDATER_JSON_ASSET_NAME}: ${(error as Error).message}`);
+    }
+  }
+
+  const candidates = releaseAssets
+    .map((asset) => buildUpdaterCandidateFromReleaseAsset(asset, uploadedByName))
+    .filter((candidate): candidate is UpdaterAssetCandidate => Boolean(candidate));
+
+  if (candidates.length === 0) {
+    core.warning(`No release assets were mappable for updater JSON on release id=${releaseId}; skipping.`);
+    return;
+  }
+
+  const signatureByAssetName = new Map<string, ReleaseAssetSummary>();
+  for (const asset of releaseAssets) {
+    if (!isSignatureAssetName(asset.name)) continue;
+    const baseName = asset.name.slice(0, -'.sig'.length);
+    if (!baseName) continue;
+    signatureByAssetName.set(baseName, asset);
+  }
+
+  const signatureCache = new Map<string, string | undefined>();
+  const getSignatureForAsset = async (assetName: string): Promise<string | undefined> => {
+    if (signatureCache.has(assetName)) {
+      return signatureCache.get(assetName);
+    }
+
+    const signatureAsset = signatureByAssetName.get(assetName);
+    if (!signatureAsset) {
+      signatureCache.set(assetName, undefined);
+      return undefined;
+    }
+
+    try {
+      const signatureText = trimToString(
+        await downloadReleaseAssetText(signatureAsset.browser_download_url, token),
+      );
+      const value = signatureText || undefined;
+      signatureCache.set(assetName, value);
+      return value;
+    } catch (error) {
+      core.warning(`Failed to read signature asset "${signatureAsset.name}": ${(error as Error).message}`);
+      signatureCache.set(assetName, undefined);
+      return undefined;
+    }
+  };
+
+  const baseEntries = new Map<string, { priority: number; entry: UpdaterPlatformEntry }>();
+  const specificEntries = new Map<string, UpdaterPlatformEntry>();
+
+  for (const candidate of candidates) {
+    const signature = await getSignatureForAsset(candidate.assetName);
+    const entry: UpdaterPlatformEntry = signature
+      ? { url: candidate.url, signature }
+      : { url: candidate.url };
+
+    const baseKey = `${candidate.platform}-${candidate.arch}`;
+    if (candidate.format) {
+      specificEntries.set(`${baseKey}-${candidate.format}`, entry);
+    }
+
+    const priority = getUpdaterFormatPriority(candidate.platform, candidate.format);
+    const existing = baseEntries.get(baseKey);
+    if (!existing || priority < existing.priority) {
+      baseEntries.set(baseKey, { priority, entry });
+    }
+  }
+
+  const platforms: Record<string, UpdaterPlatformEntry> = { ...existingPlatforms };
+  for (const [key, value] of baseEntries) {
+    platforms[key] = value.entry;
+  }
+  for (const [key, value] of specificEntries) {
+    platforms[key] = value;
+  }
+
+  const payload: UpdaterJsonDocument = {
+    version: resolveUpdaterVersion(appVersion, releaseTagName, existingVersion),
+    notes: trimToString(releaseBody) || existingNotes || 'Draft release, will be updated later.',
+    pub_date: trimToString(releaseCreatedAt) || existingPubDate || new Date().toISOString(),
+    platforms,
+  };
+
+  const encoded = Buffer.from(`${JSON.stringify(payload, null, 2)}\n`, 'utf8');
+
+  await retry(async () => {
+    const currentAssets = await listReleaseAssets(octokit, owner, repo, releaseId);
+    const staleUpdaterAsset = currentAssets.find((asset) => isUpdaterJsonAssetName(asset.name));
+    if (staleUpdaterAsset) {
+      try {
+        await octokit.rest.repos.deleteReleaseAsset({
+          owner,
+          repo,
+          asset_id: staleUpdaterAsset.id,
+        });
+        core.info(`Replaced existing updater JSON asset "${UPDATER_JSON_ASSET_NAME}".`);
+      } catch (error) {
+        const status = (error as { status?: number }).status;
+        if (status !== 404) {
+          throw error;
+        }
+      }
+    }
+
+    try {
+      await octokit.rest.repos.uploadReleaseAsset({
+        owner,
+        repo,
+        release_id: releaseId,
+        name: UPDATER_JSON_ASSET_NAME,
+        data: encoded as unknown as string,
+        headers: {
+          'content-type': 'application/json',
+          'content-length': encoded.byteLength,
+        },
+      });
+    } catch (error) {
+      const status = (error as { status?: number }).status;
+      if (status === 422) {
+        throw new Error('latest.json upload conflict, retrying...');
+      }
+      throw error;
+    }
+  }, 5, 600);
+
+  core.info(
+    `Uploaded updater JSON asset "${UPDATER_JSON_ASSET_NAME}" with ${Object.keys(platforms).length} platform entry(ies).`,
+  );
 }

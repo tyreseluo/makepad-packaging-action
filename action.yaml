@@ -28,6 +28,10 @@ inputs:
   releaseId:
     description: 'Existing GitHub Release ID. When provided, assets are uploaded to this release and no new release is created.'
 
+  upload_updater_json:
+    description: 'Whether to upload a static JSON file for the updater using GitHub Releases as the CDN'
+    default: 'true'
+
   asset_name_template:
     description: 'Template for release asset names. Supports __APP__, __VERSION__, __PLATFORM__, __ARCH__, __MODE__, __EXT__, __FILENAME__, __BASENAME__.'
 
@@ -54,7 +58,7 @@ inputs:
   identifier:
     description: 'The bundle identifier for the app (e.g., com.example.makepadapp).'
 
-  project_path: 
+  project_path:
     description: 'The path to the Makepad project. Defaults to the root of the repository.'
     default: '.'
 
@@ -77,5 +81,5 @@ outputs:
     description: 'GitHub Release URL (if created).'
 
 runs:
-  using: 'node20'
+  using: node24
   main: 'dist/index.js'
