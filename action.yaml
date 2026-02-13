@@ -28,9 +28,43 @@ inputs:
   releaseId:
     description: 'Existing GitHub Release ID. When provided, assets are uploaded to this release and no new release is created.'
 
+  releaseCommitish:
+    description: 'Any branch or commit SHA the Git tag is created from, unused if the Git tag already exists. Default: SHA of current commit.'
+
   upload_updater_json:
     description: 'Whether to upload a static JSON file for the updater using GitHub Releases as the CDN'
     default: 'true'
+
+  uploadUpdaterJson:
+    description: 'Alias of upload_updater_json.'
+
+  uploadUpdaterSignatures:
+    description: 'Whether to upload .sig files (if present next to built assets) and include them in updater JSON.'
+    default: 'true'
+
+  updaterJsonPreferNsis:
+    description: 'For Windows updater JSON default entry, prefer NSIS (.exe) over MSI (.msi) when both exist.'
+    default: 'false'
+
+  retryAttempts:
+    description: 'Additional retry attempts for uploading release assets and updater JSON when transient API conflicts happen.'
+    default: '0'
+
+  owner:
+    description: 'The account owner of the repository to publish release assets to. Defaults to current repository owner.'
+
+  repo:
+    description: 'The repository name to publish release assets to. Defaults to current repository name.'
+
+  githubBaseUrl:
+    description: 'The base URL of the GitHub API to use (for GitHub Enterprise/GHE-like APIs).'
+
+  generateReleaseNotes:
+    description: "Whether to use GitHub's Release Notes API when creating a new release."
+    default: 'false'
+
+  releaseAssetNamePattern:
+    description: 'Naming pattern for uploaded release assets (e.g. [app]-[version]-[platform]-[arch]-[mode].[ext]).'
 
   asset_name_template:
     description: 'Template for release asset names. Supports __APP__, __VERSION__, __PLATFORM__, __ARCH__, __MODE__, __EXT__, __FILENAME__, __BASENAME__.'
@@ -62,6 +96,9 @@ inputs:
     description: 'The path to the Makepad project. Defaults to the root of the repository.'
     default: '.'
 
+  projectPath:
+    description: 'Alias of project_path.'
+
   include_release:
     description: 'Whether to include the release build (default: true)'
     default: 'true'
@@ -77,6 +114,8 @@ outputs:
     description: 'Resolved app name.'
   app_version:
     description: 'Resolved app version.'
+  release_id:
+    description: 'GitHub Release ID used for upload (if any).'
   release_url:
     description: 'GitHub Release URL (if created).'
 

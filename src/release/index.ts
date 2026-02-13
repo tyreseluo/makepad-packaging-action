@@ -41,6 +41,28 @@ type UpdaterPlatformEntry = {
   signature?: string;
 };
 
+type ReleaseRepositoryContext = {
+  owner?: string;
+  repo?: string;
+  githubBaseUrl?: string;
+};
+
+function resolveReleaseRepositoryContext(
+  context?: ReleaseRepositoryContext,
+): { owner: string; repo: string } {
+  return {
+    owner: trimToString(context?.owner) || github.context.repo.owner,
+    repo: trimToString(context?.repo) || github.context.repo.repo,
+  };
+}
+
+function getOctokitClient(token: string, githubBaseUrl?: string): Octokit {
+  const baseUrl = trimToString(githubBaseUrl);
+  return baseUrl
+    ? github.getOctokit(token, { baseUrl })
+    : github.getOctokit(token);
+}
+
 function mapRelease(release: {
   id: number;
   html_url: string;
@@ -232,12 +254,41 @@ export async function ensureRelease(params: {
   releaseBody?: string;
   draft: boolean;
   prerelease: boolean;
+  commitish?: string;
+  generateReleaseNotes?: boolean;
+  owner?: string;
+  repo?: string;
+  githubBaseUrl?: string;
 }): Promise<{ id: number; html_url: string }> {
-  const { token, tagName: rawTagName, releaseName, releaseBody, draft, prerelease } = params;
+  const {
+    token,
+    tagName: rawTagName,
+    releaseName,
+    releaseBody,
+    draft,
+    prerelease,
+    commitish,
+    generateReleaseNotes,
+  } = params;
   const tagName = normalizeTagName(rawTagName);
-  const octokit = github.getOctokit(token);
-  const { owner, repo } = github.context.repo;
+  const octokit = getOctokitClient(token, params.githubBaseUrl);
+  const { owner, repo } = resolveReleaseRepositoryContext(params);
+  const resolvedCommitish = trimToString(commitish) || github.context.sha;
   core.info(`Ensuring release for tag "${tagName}"...`);
+
+  const createRelease = async (targetCommitish?: string) => {
+    return octokit.rest.repos.createRelease({
+      owner,
+      repo,
+      tag_name: tagName,
+      name: releaseName || tagName,
+      body: releaseBody,
+      draft,
+      prerelease,
+      target_commitish: targetCommitish,
+      generate_release_notes: Boolean(generateReleaseNotes),
+    });
+  };
 
   const ensureTagRef = async (): Promise<'created' | 'exists' | 'skipped'> => {
     const ref = tagName.startsWith('refs/tags/') ? tagName : `refs/tags/${tagName}`;
@@ -246,7 +297,7 @@ export async function ensureRelease(params: {
         owner,
         repo,
         ref,
-        sha: github.context.sha,
+        sha: resolvedCommitish,
       });
       return 'created';
     } catch (error) {
@@ -337,15 +388,23 @@ export async function ensureRelease(params: {
       return { id: maybeExisting.id, html_url: maybeExisting.html_url };
     }
 
-    const created = await octokit.rest.repos.createRelease({
-      owner,
-      repo,
-      tag_name: tagName,
-      name: releaseName || tagName,
-      body: releaseBody,
-      draft,
-      prerelease,
-    });
+    let created;
+    try {
+      created = await createRelease(resolvedCommitish);
+    } catch (error) {
+      const status = (error as { status?: number }).status;
+      const message = String((error as Error).message || '');
+      const isCommitishError =
+        status === 422 &&
+        /commit|sha|target[_-]?commitish|not found|unprocessable/i.test(message);
+      if (!isCommitishError) {
+        throw error;
+      }
+      core.warning(
+        `Failed to create release with target_commitish="${resolvedCommitish}". Retrying without target_commitish.`,
+      );
+      created = await createRelease(undefined);
+    }
     core.info(`Created release id=${created.data.id} for tag "${tagName}".`);
 
     const stabilized = await resolveCanonicalReleaseWithStabilization(
@@ -396,11 +455,14 @@ export async function cleanupDuplicateReleases(params: {
   token: string;
   tagName: string;
   keepReleaseId: number;
+  owner?: string;
+  repo?: string;
+  githubBaseUrl?: string;
 }): Promise<void> {
   const { token, tagName: rawTagName, keepReleaseId } = params;
   const tagName = normalizeTagName(rawTagName);
-  const octokit = github.getOctokit(token);
-  const { owner, repo } = github.context.repo;
+  const octokit = getOctokitClient(token, params.githubBaseUrl);
+  const { owner, repo } = resolveReleaseRepositoryContext(params);
 
   const matches = await listReleasesByTag(octokit, owner, repo, tagName);
   if (matches.length <= 1) {
@@ -498,6 +560,19 @@ function applyTemplate(template: string, values: Record<string, string>): string
   return result;
 }
 
+function renderPattern(
+  pattern: string,
+  values: Record<string, string>,
+): string {
+  return pattern.replace(/\[(\w+)\]/g, (match, key: string) => {
+    const normalized = key.toLowerCase();
+    if (!Object.prototype.hasOwnProperty.call(values, normalized)) {
+      return match;
+    }
+    return values[normalized];
+  });
+}
+
 function ensureUniqueAssetName(name: string, used: Set<string>): string {
   if (!used.has(name)) {
     used.add(name);
@@ -566,11 +641,20 @@ function buildAssetName(params: {
   artifact: Artifact;
   uploadPath: string;
   assetNameTemplate?: string;
+  releaseAssetNamePattern?: string;
   assetPrefix?: string;
   appName?: string;
   appVersion?: string;
 }): string {
-  const { artifact, uploadPath, assetNameTemplate, assetPrefix, appName, appVersion } = params;
+  const {
+    artifact,
+    uploadPath,
+    assetNameTemplate,
+    releaseAssetNamePattern,
+    assetPrefix,
+    appName,
+    appVersion,
+  } = params;
   const extension = getExtensionInfo(uploadPath);
   const uploadFilename = basename(uploadPath);
   const uploadBasename = extension.raw
@@ -592,6 +676,18 @@ function buildAssetName(params: {
 
   if (assetNameTemplate) {
     name = applyTemplate(assetNameTemplate, values);
+  } else if (releaseAssetNamePattern) {
+    name = renderPattern(releaseAssetNamePattern, {
+      app: values['__APP__'],
+      name: values['__APP__'],
+      version: values['__VERSION__'],
+      platform: values['__PLATFORM__'],
+      arch: values['__ARCH__'],
+      mode: values['__MODE__'],
+      ext: values['__EXT__'],
+      filename: values['__FILENAME__'],
+      basename: values['__BASENAME__'],
+    });
   } else {
     const parts = [
       values['__APP__'],
@@ -618,16 +714,36 @@ export async function uploadReleaseAssets(params: {
   releaseId: number;
   artifacts: Artifact[];
   assetNameTemplate?: string;
+  releaseAssetNamePattern?: string;
   assetPrefix?: string;
   appName?: string;
   appVersion?: string;
+  retryAttempts?: number;
+  uploadUpdaterSignatures?: boolean;
+  owner?: string;
+  repo?: string;
+  githubBaseUrl?: string;
 }): Promise<UploadedReleaseAsset[]> {
-  const { token, releaseId, artifacts, assetNameTemplate, assetPrefix, appName, appVersion } = params;
-  const octokit = github.getOctokit(token);
-  const { owner, repo } = github.context.repo;
+  const {
+    token,
+    releaseId,
+    artifacts,
+    assetNameTemplate,
+    releaseAssetNamePattern,
+    assetPrefix,
+    appName,
+    appVersion,
+    retryAttempts = 0,
+    uploadUpdaterSignatures = true,
+  } = params;
+  const octokit = getOctokitClient(token, params.githubBaseUrl);
+  const { owner, repo } = resolveReleaseRepositoryContext(params);
   core.info(`Preparing release asset upload. release_id=${releaseId}, artifacts=${artifacts.length}`);
 
-  const filteredArtifacts = filterArtifactsForUpload(artifacts);
+  const filteredArtifacts = filterArtifactsForUpload(artifacts).filter((artifact) => {
+    if (uploadUpdaterSignatures) return true;
+    return getExtensionInfo(artifact.path).lower !== 'sig';
+  });
   if (filteredArtifacts.length !== artifacts.length) {
     core.info(`Filtered artifacts for release upload: ${filteredArtifacts.length}/${artifacts.length} selected.`);
   }
@@ -639,13 +755,85 @@ export async function uploadReleaseAssets(params: {
     throw new Error(`Missing artifacts on disk:\n${missingArtifacts.join('\n')}`);
   }
 
-  const existingAssets = await listReleaseAssets(octokit, owner, repo, releaseId);
-  const existingByName = new Map(
-    existingAssets.map((asset) => [asset.name, asset.id]),
-  );
-
   const usedNames = new Set<string>();
   const uploadedAssets: UploadedReleaseAsset[] = [];
+  const maxAttempts = Math.max(2, Math.trunc(retryAttempts) + 1);
+
+  const uploadAssetWithRetry = async (
+    assetName: string,
+    uploadPath: string,
+  ): Promise<{ id: number; name: string; url: string }> => {
+    const uploaded = await retry(async () => {
+      const existingAssets = await listReleaseAssets(octokit, owner, repo, releaseId);
+      const existing = existingAssets.find((asset) => asset.name === assetName);
+      if (existing) {
+        try {
+          await octokit.rest.repos.deleteReleaseAsset({
+            owner,
+            repo,
+            asset_id: existing.id,
+          });
+          core.info(`Replaced existing release asset "${assetName}" (asset_id=${existing.id}).`);
+        } catch (error) {
+          const status = (error as { status?: number }).status;
+          if (status !== 404) {
+            throw error;
+          }
+        }
+      }
+
+      const uploadStat = statSync(uploadPath);
+      core.info(`Uploading asset "${assetName}" (${uploadStat.size} bytes)...`);
+      try {
+        const response = await octokit.rest.repos.uploadReleaseAsset({
+          owner,
+          repo,
+          release_id: releaseId,
+          name: assetName,
+          data: createReadStream(uploadPath) as unknown as string,
+          headers: {
+            'content-type': 'application/octet-stream',
+            'content-length': uploadStat.size,
+          },
+        });
+        return {
+          id: response.data.id,
+          name: response.data.name,
+          url: response.data.browser_download_url,
+        };
+      } catch (error) {
+        const status = (error as { status?: number }).status;
+        if (status === 422) {
+          throw new Error(`Asset upload conflict for "${assetName}"`);
+        }
+        throw error;
+      }
+    }, maxAttempts, 700, (attempt, error) => {
+      core.warning(
+        `Upload attempt ${attempt}/${maxAttempts} failed for "${assetName}": ${(error as Error).message}`,
+      );
+    });
+
+    return uploaded;
+  };
+
+  const findCompanionSignaturePath = (
+    originalPath: string,
+    finalUploadPath: string,
+  ): string | undefined => {
+    const candidates = Array.from(
+      new Set([
+        `${originalPath}.sig`,
+        `${finalUploadPath}.sig`,
+      ]),
+    );
+    for (const candidate of candidates) {
+      if (existsSync(candidate)) {
+        return candidate;
+      }
+    }
+    return undefined;
+  };
 
   for (const artifact of filteredArtifacts) {
     let uploadPath = artifact.path;
@@ -662,43 +850,31 @@ export async function uploadReleaseAssets(params: {
       artifact,
       uploadPath,
       assetNameTemplate,
+      releaseAssetNamePattern,
       assetPrefix,
       appName,
       appVersion,
     });
     assetName = ensureUniqueAssetName(assetName, usedNames);
 
-    const existingId = existingByName.get(assetName);
-    if (existingId) {
-      await octokit.rest.repos.deleteReleaseAsset({
-        owner,
-        repo,
-        asset_id: existingId,
-      });
-      core.info(`Replaced existing release asset "${assetName}" (asset_id=${existingId}).`);
-    }
-
-    const uploadStat = statSync(uploadPath);
-    core.info(`Uploading asset "${assetName}" (${uploadStat.size} bytes)...`);
-    const uploaded = await octokit.rest.repos.uploadReleaseAsset({
-      owner,
-      repo,
-      release_id: releaseId,
-      name: assetName,
-      data: createReadStream(uploadPath) as unknown as string,
-      headers: {
-        'content-type': 'application/octet-stream',
-        'content-length': uploadStat.size,
-      },
-    });
+    const uploaded = await uploadAssetWithRetry(assetName, uploadPath);
 
     uploadedAssets.push({
-      id: uploaded.data.id,
-      name: uploaded.data.name,
-      url: uploaded.data.browser_download_url,
+      id: uploaded.id,
+      name: uploaded.name,
+      url: uploaded.url,
       artifact,
       uploadPath,
     });
+
+    if (uploadUpdaterSignatures && getExtensionInfo(uploadPath).lower !== 'sig') {
+      const companionSignaturePath = findCompanionSignaturePath(artifact.path, uploadPath);
+      if (companionSignaturePath) {
+        let signatureAssetName = `${assetName}.sig`;
+        signatureAssetName = ensureUniqueAssetName(signatureAssetName, usedNames);
+        await uploadAssetWithRetry(signatureAssetName, companionSignaturePath);
+      }
+    }
   }
 
   return uploadedAssets;
@@ -724,7 +900,7 @@ type UpdaterJsonDocument = {
 const UPDATER_JSON_ASSET_NAME = 'latest.json';
 
 const UPDATER_FORMAT_PRIORITY: Record<UpdaterPlatformName, string[]> = {
-  windows: ['nsis', 'msi', 'exe'],
+  windows: ['msi', 'nsis', 'exe'],
   linux: ['deb', 'appimage', 'rpm'],
   darwin: ['dmg', 'pkg', 'app'],
   android: ['apk'],
@@ -773,7 +949,13 @@ function inferUpdaterFormat(fileName: string, platform?: TargetPlatform): string
   if (!suffix) return undefined;
 
   if (suffix === 'exe') {
-    return platform === 'windows' ? 'nsis' : 'exe';
+    if (platform === 'windows') {
+      return 'nsis';
+    }
+    if (lower.includes('setup') || lower.includes('nsis')) {
+      return 'nsis';
+    }
+    return 'exe';
   }
 
   if (suffix === 'tar.gz') {
@@ -846,9 +1028,16 @@ function inferArchFromAssetName(fileName: string): TargetArch | undefined {
   return undefined;
 }
 
-function getUpdaterFormatPriority(platform: UpdaterPlatformName, format?: string): number {
+function getUpdaterFormatPriority(
+  platform: UpdaterPlatformName,
+  format: string | undefined,
+  preferNsis: boolean,
+): number {
   if (!format) return Number.MAX_SAFE_INTEGER;
-  const list = UPDATER_FORMAT_PRIORITY[platform] ?? [];
+  const list =
+    platform === 'windows'
+      ? (preferNsis ? ['nsis', 'msi', 'exe'] : ['msi', 'nsis', 'exe'])
+      : (UPDATER_FORMAT_PRIORITY[platform] ?? []);
   const index = list.indexOf(format);
   return index >= 0 ? index : Number.MAX_SAFE_INTEGER - 1;
 }
@@ -890,9 +1079,24 @@ function resolveUpdaterVersion(
   return '0.0.0';
 }
 
+function buildReleaseAssetDownloadUrl(
+  owner: string,
+  repo: string,
+  tagName?: string | null,
+  assetName?: string,
+): string | undefined {
+  const tag = normalizeTagName(trimToString(tagName));
+  const name = trimToString(assetName);
+  if (!tag || !name) {
+    return undefined;
+  }
+  return `https://github.com/${owner}/${repo}/releases/download/${tag}/${encodeURIComponent(name)}`;
+}
+
 function buildUpdaterCandidateFromReleaseAsset(
   asset: ReleaseAssetSummary,
   uploadedByName: Map<string, UploadedReleaseAsset>,
+  releaseAssetUrl: (asset: ReleaseAssetSummary) => string,
 ): UpdaterAssetCandidate | null {
   if (isUpdaterJsonAssetName(asset.name) || isSignatureAssetName(asset.name)) {
     return null;
@@ -926,7 +1130,7 @@ function buildUpdaterCandidateFromReleaseAsset(
 
   return {
     assetName: asset.name,
-    url: asset.browser_download_url,
+    url: releaseAssetUrl(asset),
     platform: toUpdaterPlatformName(platform),
     arch,
     format,
@@ -962,6 +1166,11 @@ export async function uploadUpdaterJson(params: {
   releaseBody?: string | null;
   releaseCreatedAt?: string | null;
   uploadedAssets?: UploadedReleaseAsset[];
+  updaterJsonPreferNsis?: boolean;
+  retryAttempts?: number;
+  owner?: string;
+  repo?: string;
+  githubBaseUrl?: string;
 }): Promise<void> {
   const {
     token,
@@ -971,10 +1180,28 @@ export async function uploadUpdaterJson(params: {
     releaseBody,
     releaseCreatedAt,
     uploadedAssets,
+    updaterJsonPreferNsis = false,
+    retryAttempts = 0,
   } = params;
 
-  const octokit = github.getOctokit(token);
-  const { owner, repo } = github.context.repo;
+  const octokit = getOctokitClient(token, params.githubBaseUrl);
+  const { owner, repo } = resolveReleaseRepositoryContext(params);
+  const release = await octokit.rest.repos.getRelease({
+    owner,
+    repo,
+    release_id: releaseId,
+  });
+  const resolvedReleaseTag = normalizeTagName(
+    trimToString(releaseTagName) || trimToString(release.data.tag_name),
+  );
+  if (release.data.draft) {
+    core.warning(
+      `Release id=${releaseId} is draft. Asset URLs in updater JSON are prepared for tag "${resolvedReleaseTag || '(missing-tag)'}" and will be publicly downloadable only after publishing the release.`,
+    );
+  }
+  const releaseAssetUrl = (asset: ReleaseAssetSummary): string =>
+    buildReleaseAssetDownloadUrl(owner, repo, resolvedReleaseTag, asset.name) ??
+    asset.browser_download_url;
 
   const releaseAssets = await listReleaseAssets(octokit, owner, repo, releaseId);
   const releaseAssetByName = new Map(releaseAssets.map((asset) => [asset.name, asset]));
@@ -1000,7 +1227,7 @@ export async function uploadUpdaterJson(params: {
   }
 
   const candidates = releaseAssets
-    .map((asset) => buildUpdaterCandidateFromReleaseAsset(asset, uploadedByName))
+    .map((asset) => buildUpdaterCandidateFromReleaseAsset(asset, uploadedByName, releaseAssetUrl))
     .filter((candidate): candidate is UpdaterAssetCandidate => Boolean(candidate));
 
   if (candidates.length === 0) {
@@ -1056,7 +1283,11 @@ export async function uploadUpdaterJson(params: {
       specificEntries.set(`${baseKey}-${candidate.format}`, entry);
     }
 
-    const priority = getUpdaterFormatPriority(candidate.platform, candidate.format);
+    const priority = getUpdaterFormatPriority(
+      candidate.platform,
+      candidate.format,
+      updaterJsonPreferNsis,
+    );
     const existing = baseEntries.get(baseKey);
     if (!existing || priority < existing.priority) {
       baseEntries.set(baseKey, { priority, entry });
@@ -1080,6 +1311,7 @@ export async function uploadUpdaterJson(params: {
 
   const encoded = Buffer.from(`${JSON.stringify(payload, null, 2)}\n`, 'utf8');
 
+  const maxAttempts = Math.max(2, Math.trunc(retryAttempts) + 1);
   await retry(async () => {
     const currentAssets = await listReleaseAssets(octokit, owner, repo, releaseId);
     const staleUpdaterAsset = currentAssets.find((asset) => isUpdaterJsonAssetName(asset.name));
@@ -1118,7 +1350,11 @@ export async function uploadUpdaterJson(params: {
       }
       throw error;
     }
-  }, 5, 600);
+  }, maxAttempts, 600, (attempt, error) => {
+    core.warning(
+      `latest.json upload attempt ${attempt}/${maxAttempts} failed: ${(error as Error).message}`,
+    );
+  });
 
   core.info(
     `Uploaded updater JSON asset "${UPDATER_JSON_ASSET_NAME}" with ${Object.keys(platforms).length} platform entry(ies).`,

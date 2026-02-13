@@ -42,13 +42,24 @@ These inputs are already defined in `action.yaml`:
 - `releaseName`: Release title, supports `__VERSION__` placeholder
 - `releaseBody`: Release body markdown
 - `releaseId`: existing GitHub Release ID (uploads assets to this release and skips release creation)
+- `releaseCommitish`: branch/commit SHA for creating tag/release (default: current commit SHA)
 - `upload_updater_json`: upload/update `latest.json` updater metadata asset on the release (default: `true`)
+- `uploadUpdaterJson`: alias of `upload_updater_json`
+- `uploadUpdaterSignatures`: upload `.sig` files (if present next to built assets) and include signatures in `latest.json` (default: `true`)
+- `updaterJsonPreferNsis`: for Windows updater default key, prefer NSIS (`.exe`) over MSI (`.msi`) when both exist (default: `false`, meaning MSI preferred)
+- `retryAttempts`: additional retry attempts for release-asset/latest.json upload conflicts (default: `0`)
+- `owner`: release target repository owner (default: current repo owner)
+- `repo`: release target repository name (default: current repo name)
+- `githubBaseUrl`: custom GitHub API base URL (for GHE/self-hosted APIs)
+- `generateReleaseNotes`: use GitHub generated release notes when creating a release (default: `false`)
+- `releaseAssetNamePattern`: pattern naming for uploaded assets, supports `[app] [name] [version] [platform] [arch] [mode] [ext] [filename] [basename]`
 - `asset_name_template`: template for asset names (`__APP__`, `__VERSION__`, `__PLATFORM__`, `__ARCH__`, `__MODE__`, `__EXT__`, `__FILENAME__`, `__BASENAME__`)
 - `asset_prefix`: optional prefix prepended to generated asset names
 - `releaseDraft`: create draft release (`true`/`false`)
 - `prerelease`: mark as prerelease (`true`/`false`)
 - `github_token`: token for release creation/upload (defaults to env `GITHUB_TOKEN`)
 - `project_path`: Makepad project root (default: `.`)
+- `projectPath`: alias of `project_path`
 - `app_name`: override app name (auto from `Cargo.toml` if omitted)
 - `app_version`: override version (auto from `Cargo.toml` if omitted)
 - `identifier`: override bundle identifier
@@ -131,6 +142,7 @@ and automatically forces `MAKEPAD_IOS_CREATE_IPA=true`.
 - `artifacts`: JSON array of `{ path, platform, arch, mode, version }`
 - `app_name`: resolved app name
 - `app_version`: resolved version
+- `release_id`: GitHub Release ID used for upload (if any)
 - `release_url`: GitHub Release URL (if created)
 
 ### Behavior
@@ -145,15 +157,27 @@ and automatically forces `MAKEPAD_IOS_CREATE_IPA=true`.
 - If `releaseId` provided, upload artifacts to that release (no release creation)
 - If `tagName` provided (and `releaseId` not set), create/update a GitHub Release and upload artifacts
 - Note: GitHub Release creation is not atomic. If multiple jobs call the action with the same `tagName`, they can race and create separate drafts; prefer a single create-release job and pass `releaseId` to each job to keep assets together.
+- Supports publishing to another repository via `owner` + `repo` (token must have permission there)
+- Supports GitHub Enterprise/self-hosted API URLs via `githubBaseUrl`
 - Release upload filters to recommended formats per platform when available (e.g. macOS `.dmg`, iOS `.ipa`)
 - If an artifact is a directory (like `.app`), it is zipped before upload
 - Asset names default to a unique `app-version-platform-arch-mode.ext` pattern unless overridden
 - By default, release upload also creates/updates a `latest.json` asset (`version`, `notes`, `pub_date`, `platforms`) suitable for static updater metadata hosted on GitHub Releases CDN
+- For draft releases, updater URLs are generated using the release tag (`/releases/download/<tag>/<asset>`) and become publicly downloadable after the release is published
+- If `<artifact>.sig` exists next to an uploaded artifact and `uploadUpdaterSignatures=true`, it is uploaded as `<asset>.sig` and used as `signature` in `latest.json`
+- Upload steps support retries via `retryAttempts` to reduce failures from concurrent asset conflicts
 - Release upload requires a token with `contents: write` permission
 
 ### Placeholder replacement
 
 When `tagName` or `releaseName` contains `__VERSION__`, it is replaced with the resolved app version.
+
+### Updater signatures
+
+- You do not pass signatures in a dedicated action input.
+- Instead, place signature files beside built artifacts using the `<artifact>.sig` naming convention.
+- Example: if an uploaded asset resolves to `robrix-1.2.3-windows-x86_64-release.exe`, provide a file ending with `.exe.sig` for that artifact source path.
+- With `uploadUpdaterSignatures=true` (default), the action uploads those `.sig` files and writes them into `latest.json` under each matched platform entry.
 
 ### Release Modes
 

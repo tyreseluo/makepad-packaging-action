@@ -23,6 +23,35 @@ import {
 } from './release';
 import type { ReleaseSummary } from './release';
 
+function getBooleanInputWithAlias(
+  primary: string,
+  alias: string | undefined,
+  defaultValue: boolean,
+): boolean {
+  const aliasValue = alias ? normalizeInput(core.getInput(alias)) : undefined;
+  const primaryValue = normalizeInput(core.getInput(primary));
+  const resolved = aliasValue ?? primaryValue;
+  if (resolved === undefined) {
+    return defaultValue;
+  }
+  return parseEnvBool(resolved);
+}
+
+function parseRetryAttempts(value?: string): number {
+  const normalized = normalizeInput(value) ?? '0';
+  const parsed = Number.parseInt(normalized, 10);
+  if (!Number.isInteger(parsed) || parsed < 0) {
+    throw new Error('retryAttempts must be a non-negative integer.');
+  }
+  return parsed;
+}
+
+function getOctokitClient(token: string, githubBaseUrl?: string) {
+  return githubBaseUrl
+    ? github.getOctokit(token, { baseUrl: githubBaseUrl })
+    : github.getOctokit(token);
+}
+
 
 /**
  * Action entry point: parse inputs/env, build artifacts, then publish outputs/releases.
@@ -31,9 +60,14 @@ async function run(): Promise<void> {
   try {
     console.log('Starting Makepad Packaging Action...');
     // 1) Resolve action inputs and environment configuration.
+    const project_path_input =
+      normalizeInput(core.getInput('projectPath')) ??
+      normalizeInput(core.getInput('project_path')) ??
+      normalizeInput(process.argv[2]) ??
+      '.';
     const projectPath = resolve(
       process.cwd(),
-      core.getInput('project_path') || process.argv[2],
+      project_path_input,
     );
 
     const args = stringArgv(core.getInput('args'));
@@ -89,9 +123,24 @@ async function run(): Promise<void> {
     const release_name_input = normalizeInput(core.getInput('releaseName'));
     const release_body_input = normalizeInput(core.getInput('releaseBody'));
     const release_id_input = normalizeInput(core.getInput('releaseId'));
-    const upload_updater_json = core.getBooleanInput('upload_updater_json');
+    const upload_updater_json = getBooleanInputWithAlias(
+      'upload_updater_json',
+      'uploadUpdaterJson',
+      true,
+    );
+    const upload_updater_signatures = core.getBooleanInput('uploadUpdaterSignatures');
+    const updater_json_prefer_nsis = core.getBooleanInput('updaterJsonPreferNsis');
+    const retry_attempts = parseRetryAttempts(core.getInput('retryAttempts'));
     const asset_name_template = normalizeInput(core.getInput('asset_name_template'));
+    const release_asset_name_pattern = normalizeInput(core.getInput('releaseAssetNamePattern'));
     const asset_prefix = normalizeInput(core.getInput('asset_prefix'));
+    const release_commitish = normalizeInput(core.getInput('releaseCommitish')) || github.context.sha;
+    const release_owner = normalizeInput(core.getInput('owner')) || github.context.repo.owner;
+    const release_repo = normalizeInput(core.getInput('repo')) || github.context.repo.repo;
+    const github_base_url =
+      normalizeInput(core.getInput('githubBaseUrl')) ||
+      normalizeInput(process.env.GITHUB_API_URL);
+    const generate_release_notes = core.getBooleanInput('generateReleaseNotes');
     const release_draft = core.getBooleanInput('releaseDraft');
     const prerelease = core.getBooleanInput('prerelease');
     const github_token = normalizeInput(core.getInput('github_token')) || process.env.GITHUB_TOKEN || '';
@@ -110,6 +159,17 @@ async function run(): Promise<void> {
       core.info(`MAKEPAD_IOS_CARGO_EXTRA_ARGS enabled: ${ios_cargo_extra_args.length} token(s).`);
     }
     core.info(`Updater JSON upload enabled=${upload_updater_json}.`);
+    core.info(`Updater signature upload enabled=${upload_updater_signatures}.`);
+    core.info(`Release target repository: ${release_owner}/${release_repo}.`);
+    if (retry_attempts > 0) {
+      core.info(`Retry attempts enabled: ${retry_attempts} additional attempt(s).`);
+    }
+    if (github_base_url) {
+      core.info(`Using custom GitHub API base URL: ${github_base_url}`);
+    }
+    if (asset_name_template && release_asset_name_pattern) {
+      core.warning('Both asset_name_template and releaseAssetNamePattern are set; asset_name_template takes precedence.');
+    }
 
     if (ios_upload_testflight) {
       if (ios_sim) {
@@ -223,6 +283,7 @@ async function run(): Promise<void> {
         throw new Error('GITHUB_TOKEN (or github_token input) is required for release upload.');
       }
       core.info(`Release mode: upload to existing release id=${releaseId}.`);
+      core.setOutput('release_id', releaseId.toString());
 
       if (tag_name_input_raw || release_name_input || release_body_input) {
         core.info(
@@ -233,11 +294,10 @@ async function run(): Promise<void> {
         core.info('releaseId provided; releaseDraft/prerelease inputs are ignored for release creation.');
       }
 
-      const octokit = github.getOctokit(github_token);
-      const { owner, repo } = github.context.repo;
+      const octokit = getOctokitClient(github_token, github_base_url);
       let releaseSummary: ReleaseSummary | null = null;
       try {
-        releaseSummary = await getReleaseById(octokit, owner, repo, releaseId);
+        releaseSummary = await getReleaseById(octokit, release_owner, release_repo, releaseId);
         if (releaseSummary) {
           core.setOutput('release_url', releaseSummary.html_url);
         }
@@ -253,9 +313,15 @@ async function run(): Promise<void> {
           releaseId,
           artifacts,
           assetNameTemplate: asset_name_template,
+          releaseAssetNamePattern: release_asset_name_pattern,
           assetPrefix: asset_prefix,
           appName: resolved_app_name,
           appVersion: resolved_app_version,
+          retryAttempts: retry_attempts,
+          uploadUpdaterSignatures: upload_updater_signatures,
+          owner: release_owner,
+          repo: release_repo,
+          githubBaseUrl: github_base_url,
         });
       }
 
@@ -269,6 +335,11 @@ async function run(): Promise<void> {
           releaseBody: releaseSummary?.body,
           releaseCreatedAt: releaseSummary?.created_at,
           uploadedAssets,
+          updaterJsonPreferNsis: updater_json_prefer_nsis,
+          retryAttempts: retry_attempts,
+          owner: release_owner,
+          repo: release_repo,
+          githubBaseUrl: github_base_url,
         });
       }
     } else if (tag_name_input) {
@@ -293,16 +364,21 @@ async function run(): Promise<void> {
         releaseBody: release_body,
         draft: release_draft,
         prerelease,
+        commitish: release_commitish,
+        generateReleaseNotes: generate_release_notes,
+        owner: release_owner,
+        repo: release_repo,
+        githubBaseUrl: github_base_url,
       });
       core.info(`Release mode: ensured release id=${release.id} for tag=${resolved_tag}.`);
 
+      core.setOutput('release_id', release.id.toString());
       core.setOutput('release_url', release.html_url);
 
-      const octokit = github.getOctokit(github_token);
-      const { owner, repo } = github.context.repo;
+      const octokit = getOctokitClient(github_token, github_base_url);
       let releaseSummary: ReleaseSummary | null = null;
       try {
-        releaseSummary = await getReleaseById(octokit, owner, repo, release.id);
+        releaseSummary = await getReleaseById(octokit, release_owner, release_repo, release.id);
       } catch (error) {
         core.warning(`Failed to refresh release ${release.id} details: ${(error as Error).message}`);
       }
@@ -315,9 +391,15 @@ async function run(): Promise<void> {
           releaseId: release.id,
           artifacts,
           assetNameTemplate: asset_name_template,
+          releaseAssetNamePattern: release_asset_name_pattern,
           assetPrefix: asset_prefix,
           appName: resolved_app_name,
           appVersion: resolved_app_version,
+          retryAttempts: retry_attempts,
+          uploadUpdaterSignatures: upload_updater_signatures,
+          owner: release_owner,
+          repo: release_repo,
+          githubBaseUrl: github_base_url,
         });
       }
 
@@ -331,6 +413,11 @@ async function run(): Promise<void> {
           releaseBody: releaseSummary?.body ?? release_body,
           releaseCreatedAt: releaseSummary?.created_at,
           uploadedAssets,
+          updaterJsonPreferNsis: updater_json_prefer_nsis,
+          retryAttempts: retry_attempts,
+          owner: release_owner,
+          repo: release_repo,
+          githubBaseUrl: github_base_url,
         });
       }
 
@@ -338,6 +425,9 @@ async function run(): Promise<void> {
         token: github_token,
         tagName: resolved_tag,
         keepReleaseId: release.id,
+        owner: release_owner,
+        repo: release_repo,
+        githubBaseUrl: github_base_url,
       });
     }
 
