@@ -37,9 +37,12 @@ export type UploadedReleaseAsset = {
   uploadPath: string;
 };
 
+type UpdaterFormat = 'nsis' | 'wix' | 'appimage' | 'app';
+
 type UpdaterPlatformEntry = {
   url: string;
-  signature?: string;
+  signature: string;
+  format: UpdaterFormat;
 };
 
 type ReleaseRepositoryContext = {
@@ -889,7 +892,7 @@ type UpdaterAssetCandidate = {
   url: string;
   platform: UpdaterPlatformName;
   arch: TargetArch;
-  format?: string;
+  format?: UpdaterFormat;
 };
 
 type UpdaterJsonDocument = {
@@ -901,29 +904,26 @@ type UpdaterJsonDocument = {
 
 const UPDATER_JSON_ASSET_NAME = 'latest.json';
 
-const UPDATER_FORMAT_PRIORITY: Record<UpdaterPlatformName, string[]> = {
-  windows: ['msi', 'nsis', 'exe'],
-  linux: ['deb', 'appimage', 'rpm'],
-  darwin: ['dmg', 'pkg', 'app'],
-  android: ['apk'],
-  ios: ['ipa'],
+const UPDATER_FORMAT_PRIORITY: Record<UpdaterPlatformName, UpdaterFormat[]> = {
+  windows: ['wix', 'nsis'],
+  linux: ['appimage'],
+  darwin: ['app'],
+  android: [],
+  ios: [],
 };
 
 const SUPPORTED_UPDATER_FORMATS = new Set([
   'nsis',
-  'msi',
-  'exe',
-  'deb',
-  'rpm',
+  'wix',
   'appimage',
-  'dmg',
-  'pkg',
   'app',
-  'apk',
-  'ipa',
-  'zip',
-  'tar.gz',
 ]);
+
+const UPDATER_BASE_KEY_PATTERN = /^(windows|linux|darwin|android|ios)-(x86_64|aarch64|armv7|i686)$/;
+
+function isUpdaterFormat(value: string): value is UpdaterFormat {
+  return SUPPORTED_UPDATER_FORMATS.has(value);
+}
 
 function isSignatureAssetName(name: string): boolean {
   return trimToString(name).toLowerCase().endsWith('.sig');
@@ -945,10 +945,14 @@ function getLowerAssetSuffix(fileName: string): string {
   return getExtensionInfo(fileName).lower;
 }
 
-function inferUpdaterFormat(fileName: string, platform?: TargetPlatform): string | undefined {
+function inferUpdaterFormat(fileName: string, platform?: TargetPlatform): UpdaterFormat | undefined {
   const lower = fileName.toLowerCase();
   const suffix = getLowerAssetSuffix(fileName);
   if (!suffix) return undefined;
+
+  if (suffix === 'msi') {
+    return 'wix';
+  }
 
   if (suffix === 'exe') {
     if (platform === 'windows') {
@@ -957,17 +961,25 @@ function inferUpdaterFormat(fileName: string, platform?: TargetPlatform): string
     if (lower.includes('setup') || lower.includes('nsis')) {
       return 'nsis';
     }
-    return 'exe';
+    return undefined;
+  }
+
+  if (suffix === 'appimage') {
+    return 'appimage';
+  }
+
+  if (suffix === 'app') {
+    return 'app';
   }
 
   if (suffix === 'tar.gz') {
     if (platform === 'macos' || /(^|[._-])app([._-]|$)/.test(lower)) {
       return 'app';
     }
-    return 'tar.gz';
+    return undefined;
   }
 
-  return suffix;
+  return undefined;
 }
 
 function inferPlatformFromAssetName(fileName: string, format?: string): TargetPlatform | undefined {
@@ -976,7 +988,7 @@ function inferPlatformFromAssetName(fileName: string, format?: string): TargetPl
   if (
     lower.includes('windows') ||
     format === 'nsis' ||
-    format === 'msi' ||
+    format === 'wix' ||
     lower.endsWith('.exe') ||
     lower.endsWith('.msi')
   ) {
@@ -994,8 +1006,6 @@ function inferPlatformFromAssetName(fileName: string, format?: string): TargetPl
   if (
     lower.includes('darwin') ||
     lower.includes('macos') ||
-    format === 'dmg' ||
-    format === 'pkg' ||
     format === 'app'
   ) {
     return 'macos';
@@ -1003,8 +1013,6 @@ function inferPlatformFromAssetName(fileName: string, format?: string): TargetPl
 
   if (
     lower.includes('linux') ||
-    format === 'deb' ||
-    format === 'rpm' ||
     format === 'appimage'
   ) {
     return 'linux';
@@ -1032,13 +1040,13 @@ function inferArchFromAssetName(fileName: string): TargetArch | undefined {
 
 function getUpdaterFormatPriority(
   platform: UpdaterPlatformName,
-  format: string | undefined,
+  format: UpdaterFormat | undefined,
   preferNsis: boolean,
 ): number {
   if (!format) return Number.MAX_SAFE_INTEGER;
   const list =
     platform === 'windows'
-      ? (preferNsis ? ['nsis', 'msi', 'exe'] : ['msi', 'nsis', 'exe'])
+      ? (preferNsis ? ['nsis', 'wix'] : ['wix', 'nsis'])
       : (UPDATER_FORMAT_PRIORITY[platform] ?? []);
   const index = list.indexOf(format);
   return index >= 0 ? index : Number.MAX_SAFE_INTEGER - 1;
@@ -1051,12 +1059,15 @@ function normalizeUpdaterPlatforms(value: unknown): Record<string, UpdaterPlatfo
   }
 
   for (const [key, item] of Object.entries(value as Record<string, unknown>)) {
+    if (!UPDATER_BASE_KEY_PATTERN.test(key)) continue;
     if (!item || typeof item !== 'object') continue;
     const obj = item as Record<string, unknown>;
     const url = trimToString(obj.url);
     if (!url) continue;
     const signature = trimToString(obj.signature);
-    result[key] = signature ? { url, signature } : { url };
+    const format = trimToString(obj.format).toLowerCase();
+    if (!signature || !isUpdaterFormat(format)) continue;
+    result[key] = { url, signature, format };
   }
 
   return result;
@@ -1107,7 +1118,7 @@ function buildUpdaterCandidateFromReleaseAsset(
   const uploaded = uploadedByName.get(asset.name);
   let platform: TargetPlatform | undefined;
   let arch: TargetArch | undefined;
-  let format: string | undefined;
+  let format: UpdaterFormat | undefined;
 
   if (uploaded) {
     platform = uploaded.artifact.platform;
@@ -1122,11 +1133,11 @@ function buildUpdaterCandidateFromReleaseAsset(
     }
   }
 
-  if (!platform || !arch) {
+  if (!platform || !arch || !format || !isUpdaterFormat(format)) {
     return null;
   }
 
-  if (!uploaded && (!format || !SUPPORTED_UPDATER_FORMATS.has(format))) {
+  if (!SUPPORTED_UPDATER_FORMATS.has(format)) {
     return null;
   }
 
@@ -1312,19 +1323,26 @@ export async function uploadUpdaterJson(params: {
   };
 
   const baseEntries = new Map<string, { priority: number; entry: UpdaterPlatformEntry }>();
-  const specificEntries = new Map<string, UpdaterPlatformEntry>();
 
   for (const candidate of candidates) {
+    if (!candidate.format) {
+      continue;
+    }
     const signature = await getSignatureForAsset(candidate.assetName);
-    const entry: UpdaterPlatformEntry = signature
-      ? { url: candidate.url, signature }
-      : { url: candidate.url };
-
-    const baseKey = `${candidate.platform}-${candidate.arch}`;
-    if (candidate.format) {
-      specificEntries.set(`${baseKey}-${candidate.format}`, entry);
+    if (!signature) {
+      core.warning(
+        `Skipping updater entry for "${candidate.assetName}" because no signature asset was available.`,
+      );
+      continue;
     }
 
+    const entry: UpdaterPlatformEntry = {
+      url: candidate.url,
+      signature,
+      format: candidate.format,
+    };
+
+    const baseKey = `${candidate.platform}-${candidate.arch}`;
     const priority = getUpdaterFormatPriority(
       candidate.platform,
       candidate.format,
@@ -1340,8 +1358,9 @@ export async function uploadUpdaterJson(params: {
   for (const [key, value] of baseEntries) {
     platforms[key] = value.entry;
   }
-  for (const [key, value] of specificEntries) {
-    platforms[key] = value;
+  if (Object.keys(platforms).length === 0) {
+    core.warning(`No valid signed updater entries remained for release id=${releaseId}; skipping latest.json upload.`);
+    return;
   }
 
   const payload: UpdaterJsonDocument = {
