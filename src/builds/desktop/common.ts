@@ -1,4 +1,5 @@
-import { existsSync, readdirSync } from "fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "fs";
+import { tmpdir } from "os";
 import { isAbsolute, join } from "path";
 import type { Artifact, BuildOptions, DesktopTarget, InitOptions } from "../../types";
 import {
@@ -236,6 +237,19 @@ function collectDesktopArtifacts(
   return artifacts;
 }
 
+function hasMacosNotarizationEnv(env: NodeJS.ProcessEnv): boolean {
+  if (env.APPLE_KEYCHAIN_PROFILE) {
+    return true;
+  }
+  if (env.APPLE_ID && env.APPLE_PASSWORD && env.APPLE_TEAM_ID) {
+    return true;
+  }
+  if (env.APPLE_API_KEY && env.APPLE_API_ISSUER && env.APPLE_API_KEY_PATH) {
+    return true;
+  }
+  return false;
+}
+
 export async function buildDesktopArtifactsForPlatform(
   root: string,
   initOptions: InitOptions,
@@ -258,7 +272,39 @@ export async function buildDesktopArtifactsForPlatform(
     packager_cli_args.push("--formats", packager_formats.join(","));
   }
 
-  await execCommand("cargo", ["packager", ...packager_cli_args], { cwd: root });
+  const command_env: NodeJS.ProcessEnv = { ...process.env };
+  let generated_notary_temp_dir: string | undefined;
+
+  if (
+    platform === "macos" &&
+    buildOptions.enable_macos_notarization &&
+    !hasMacosNotarizationEnv(command_env) &&
+    buildOptions.app_store_connect_api_key &&
+    buildOptions.app_store_connect_key_id &&
+    buildOptions.app_store_connect_issuer_id
+  ) {
+    const tmp_prefix = join(process.env.RUNNER_TEMP ?? tmpdir(), "makepad-notary-");
+    generated_notary_temp_dir = mkdtempSync(tmp_prefix);
+    const private_keys_dir = join(generated_notary_temp_dir, "private_keys");
+    mkdirSync(private_keys_dir, { recursive: true });
+    const api_key_path = join(private_keys_dir, `AuthKey_${buildOptions.app_store_connect_key_id}.p8`);
+    writeFileSync(api_key_path, buildOptions.app_store_connect_api_key, { mode: 0o600 });
+    command_env.APPLE_API_KEY = buildOptions.app_store_connect_key_id;
+    command_env.APPLE_API_ISSUER = buildOptions.app_store_connect_issuer_id;
+    command_env.APPLE_API_KEY_PATH = api_key_path;
+    console.log("Reusing APP_STORE_CONNECT_* credentials for macOS notarization.");
+  }
+
+  try {
+    await execCommand("cargo", ["packager", ...packager_cli_args], {
+      cwd: root,
+      env: command_env,
+    });
+  } finally {
+    if (generated_notary_temp_dir) {
+      rmSync(generated_notary_temp_dir, { recursive: true, force: true });
+    }
+  }
 
   const mode = buildOptions.mode ?? "release";
   const artifacts = collectDesktopArtifacts(

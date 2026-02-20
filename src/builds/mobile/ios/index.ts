@@ -321,16 +321,39 @@ async function ensureIosSigning(params: {
 }
 
 async function resolveSigningFingerprint(keychainPath: string, signingIdentity?: string): Promise<string> {
-  const resolved_identity = signingIdentity ?? 'Apple Distribution';
-  const with_identity = await execCommand(
-    'security',
-    ['find-certificate', '-c', resolved_identity, '-a', '-Z', keychainPath],
-    { captureOutput: true },
-  );
+  const requested_identity = signingIdentity?.trim();
+  const use_identity_lookup = Boolean(requested_identity && requested_identity !== '-');
+  let fingerprint: string | undefined;
 
-  let fingerprint = extractFingerprint(with_identity.output);
-  if (!fingerprint && signingIdentity) {
-    const fallback = await execCommand('security', ['find-certificate', '-a', '-Z', keychainPath], { captureOutput: true });
+  if (use_identity_lookup) {
+    try {
+      const with_identity = await execCommand(
+        'security',
+        ['find-certificate', '-c', requested_identity as string, '-a', '-Z', keychainPath],
+        { captureOutput: true },
+      );
+      fingerprint = extractFingerprint(with_identity.output);
+    } catch {
+      fingerprint = undefined;
+    }
+  } else {
+    const default_identity = 'Apple Distribution';
+    try {
+      const with_default = await execCommand(
+        'security',
+        ['find-certificate', '-c', default_identity, '-a', '-Z', keychainPath],
+        { captureOutput: true },
+      );
+      fingerprint = extractFingerprint(with_default.output);
+    } catch {
+      fingerprint = undefined;
+    }
+  }
+
+  if (!fingerprint) {
+    const fallback = await execCommand('security', ['find-certificate', '-a', '-Z', keychainPath], {
+      captureOutput: true,
+    });
     fingerprint = extractFingerprint(fallback.output);
   }
 

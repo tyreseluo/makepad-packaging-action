@@ -92,7 +92,7 @@ export function isCommandAvailable(command: string): { installed: boolean; path?
 export function execCommand(
   cmd: string,
   args: string[] = [],
-  options: { captureOutput?: boolean; keyword?: string; cwd?: string } = {}
+  options: { captureOutput?: boolean; keyword?: string; cwd?: string; env?: NodeJS.ProcessEnv } = {}
 ): Promise<{ code: number; output: string; matched: boolean }> {
   return new Promise((resolve, reject) => {
     let output = '';
@@ -101,6 +101,7 @@ export function execCommand(
     const child = spawn(cmd, args, {
       stdio: ['inherit', 'pipe', 'pipe'],
       cwd: options.cwd,
+      env: options.env ?? process.env,
     });
 
     child.stdout.on('data', (data) => {
@@ -259,6 +260,74 @@ export function parseEnvBool(value?: string): boolean {
   const normalized = trimToString(value).toLowerCase();
   if (!normalized) return false;
   return normalized === 'true' || normalized === '1' || normalized === 'yes';
+}
+
+function looksLikePemPrivateKey(value: string): boolean {
+  return /-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----/i.test(value);
+}
+
+function decodeBase64Utf8(value: string, envName: string): string {
+  const normalized = value.replace(/\s+/g, '');
+  if (!normalized) {
+    throw new Error(`${envName} is set but empty after trimming whitespace.`);
+  }
+
+  const decoded = Buffer.from(normalized, 'base64').toString('utf8').trim();
+  if (!decoded) {
+    throw new Error(`${envName} is not valid base64 content.`);
+  }
+  return decoded;
+}
+
+function tryDecodePemFromBase64(value: string): string | undefined {
+  const normalized = value.replace(/\s+/g, '');
+  if (!/^[A-Za-z0-9+/=]+$/.test(normalized)) {
+    return undefined;
+  }
+
+  const decoded = Buffer.from(normalized, 'base64').toString('utf8').trim();
+  if (!decoded || !looksLikePemPrivateKey(decoded)) {
+    return undefined;
+  }
+
+  return decoded;
+}
+
+export function resolveAppStoreConnectApiKey(): string | undefined {
+  const key_content_base64 = getEnvValue('APP_STORE_CONNECT_API_KEY_CONTENT_BASE64');
+  const key_base64 = getEnvValue('APP_STORE_CONNECT_API_KEY_BASE64');
+  const explicit_base64_name = key_content_base64
+    ? 'APP_STORE_CONNECT_API_KEY_CONTENT_BASE64'
+    : key_base64
+      ? 'APP_STORE_CONNECT_API_KEY_BASE64'
+      : undefined;
+  const explicit_base64 = key_content_base64 ?? key_base64;
+
+  if (explicit_base64_name && explicit_base64) {
+    const decoded = decodeBase64Utf8(explicit_base64, explicit_base64_name);
+    if (!looksLikePemPrivateKey(decoded)) {
+      throw new Error(`${explicit_base64_name} did not decode to a valid PEM private key.`);
+    }
+    return decoded;
+  }
+
+  const direct =
+    getEnvValue('APP_STORE_CONNECT_API_KEY') ??
+    getEnvValue('APP_STORE_CONNECT_API_KEY_CONTENT');
+  if (!direct) {
+    return undefined;
+  }
+
+  if (looksLikePemPrivateKey(direct)) {
+    return direct;
+  }
+
+  const auto_decoded = tryDecodePemFromBase64(direct);
+  if (auto_decoded) {
+    return auto_decoded;
+  }
+
+  return direct;
 }
 
 export function replaceVersion(input: string, version?: string): string {

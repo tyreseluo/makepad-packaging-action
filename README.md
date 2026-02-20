@@ -1,5 +1,7 @@
 # Makepad Packaging Action
 
+[English](README.md) | [简体中文](README_zh.md)
+
 ## Packaging Details
 
 ### For Desktop
@@ -65,6 +67,8 @@ These inputs are already defined in `action.yaml`:
 - `identifier`: override bundle identifier
 - `include_release`: include release build (default: `true`)
 - `include_debug`: include debug build (default: `false`)
+- `upload_to_testflight`: upload iOS IPA to TestFlight (default: `false`). Takes precedence over `MAKEPAD_IOS_UPLOAD_TESTFLIGHT`.
+- `enable_macos_notarization`: enable macOS APP_STORE_CONNECT -> APPLE_API credential mapping (default: `false`)
 
 ### Environment variables
 
@@ -84,11 +88,19 @@ Mobile and signing configuration is provided via env vars only:
 - `MAKEPAD_IOS_CREATE_IPA`: create IPA from .app bundle (`true`/`false`), default `false`
 - `MAKEPAD_IOS_UPLOAD_TESTFLIGHT`: upload IPA to TestFlight (`true`/`false`), default `false`
 - `MAKEPAD_IOS_CARGO_EXTRA_ARGS`: extra args appended only to iOS `cargo makepad` build commands
+- `APP_STORE_CONNECT_API_KEY` or `APP_STORE_CONNECT_API_KEY_CONTENT`: App Store Connect API key content (`.p8` PEM text)
+- `APP_STORE_CONNECT_API_KEY_CONTENT_BASE64` (or `APP_STORE_CONNECT_API_KEY_BASE64`): base64-encoded `.p8` content (optional alternative to plain PEM text)
+- `APP_STORE_CONNECT_KEY_ID`: App Store Connect key ID
+- `APP_STORE_CONNECT_ISSUER_ID`: App Store Connect issuer ID
 - `APPLE_CERTIFICATE`: base64-encoded Apple signing certificate (.p12)
 - `APPLE_CERTIFICATE_PASSWORD`: password for the certificate
 - `APPLE_PROVISIONING_PROFILE`: base64-encoded provisioning profile (.mobileprovision)
 - `APPLE_KEYCHAIN_PASSWORD`: password for the temporary keychain
 - `APPLE_SIGNING_IDENTITY`: signing identity common name used to locate the certificate (default: `Apple Distribution`)
+- `APPLE_KEYCHAIN_PROFILE`: optional notarization keychain profile for macOS `notarytool`
+- `APPLE_ID` / `APPLE_PASSWORD` / `APPLE_TEAM_ID`: optional Apple ID notarization credentials for macOS
+- `APPLE_API_KEY` / `APPLE_API_ISSUER` / `APPLE_API_KEY_PATH`: optional App Store Connect notarization credentials for macOS
+- `MAKEPAD_MACOS_ENABLE_NOTARIZATION`: optional env fallback for enabling APP_STORE_CONNECT -> APPLE_API credential mapping (`true`/`false`)
 
 For faster mobile CI builds (mirroring `robrix#729`), you can pass Cargo profile overrides:
 
@@ -129,13 +141,32 @@ If you have multiple signing identities or profiles, set `MAKEPAD_IOS_PROFILE` a
 `MAKEPAD_IOS_CERT` (or provide `APPLE_SIGNING_IDENTITY` so the action can select the right cert).
 The action uses `--device=iPhone` for device builds.
 
-To upload to TestFlight, set `MAKEPAD_IOS_UPLOAD_TESTFLIGHT=true` and provide:
+To upload to TestFlight, set `upload_to_testflight=true` (or `MAKEPAD_IOS_UPLOAD_TESTFLIGHT=true`) and provide:
 - `APP_STORE_CONNECT_API_KEY` (or `APP_STORE_CONNECT_API_KEY_CONTENT`)
 - `APP_STORE_CONNECT_KEY_ID`
 - `APP_STORE_CONNECT_ISSUER_ID`
 
 When TestFlight upload is enabled, the action requires a device build (`MAKEPAD_IOS_SIM=false`)
 and automatically forces `MAKEPAD_IOS_CREATE_IPA=true`.
+
+`APP_STORE_CONNECT_API_KEY_CONTENT` is usually plain multi-line PEM text. If you prefer storing base64 in secrets, set `APP_STORE_CONNECT_API_KEY_CONTENT_BASE64` (or `APP_STORE_CONNECT_API_KEY_BASE64`).
+
+### macOS signing and notarization convenience
+
+For macOS desktop packaging, `cargo-packager` can use:
+
+- `APPLE_CERTIFICATE` + `APPLE_CERTIFICATE_PASSWORD` for signing certificate import (same pair reused by iOS device signing)
+- notarization credentials via one of:
+  - `APPLE_KEYCHAIN_PROFILE`
+  - `APPLE_ID` + `APPLE_PASSWORD` + `APPLE_TEAM_ID`
+  - `APPLE_API_KEY` + `APPLE_API_ISSUER` + `APPLE_API_KEY_PATH`
+
+If `enable_macos_notarization=true` (or `MAKEPAD_MACOS_ENABLE_NOTARIZATION=true`) and explicit macOS notarization env vars are not set, this action automatically reuses:
+- `APP_STORE_CONNECT_API_KEY(_CONTENT)`
+- `APP_STORE_CONNECT_KEY_ID`
+- `APP_STORE_CONNECT_ISSUER_ID`
+
+It writes a temporary `AuthKey_<KEY_ID>.p8` file and maps them to `APPLE_API_*` for `cargo-packager`.
 
 ### Outputs
 

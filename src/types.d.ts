@@ -27,6 +27,11 @@ export interface BuildOptions {
   ios_cert?: string;
   ios_sim?: boolean;
   ios_create_ipa?: boolean;
+  ios_upload_testflight?: boolean;
+  enable_macos_notarization?: boolean;
+  app_store_connect_api_key?: string;
+  app_store_connect_key_id?: string;
+  app_store_connect_issuer_id?: string;
   apple_certificate?: string;
   apple_certificate_password?: string;
   apple_provisioning_profile?: string;

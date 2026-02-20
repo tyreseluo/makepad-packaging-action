@@ -107,6 +107,14 @@ inputs:
     description: 'Whether to include the debug build (default: false)'
     default: 'false'
 
+  upload_to_testflight:
+    description: 'Whether to upload iOS IPA to TestFlight (default: false). This input takes precedence over MAKEPAD_IOS_UPLOAD_TESTFLIGHT.'
+    default: 'false'
+
+  enable_macos_notarization:
+    description: 'Whether to enable macOS notarization credential mapping from APP_STORE_CONNECT_* vars (default: false).'
+    default: 'false'
+
 outputs:
   artifacts:
     description: 'JSON array of artifacts built by the action.'

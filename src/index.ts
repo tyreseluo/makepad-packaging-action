@@ -12,6 +12,7 @@ import {
   parseEnvBool,
   replaceVersion,
   resolveManifestPackageField,
+  resolveAppStoreConnectApiKey,
 } from './utils';
 import { uploadToTestFlight } from './builds/mobile/ios/testflight';
 import {
@@ -76,6 +77,8 @@ async function run(): Promise<void> {
     const app_version = normalizeInput(core.getInput('app_version'));
     const include_debug = core.getBooleanInput('include_debug'); // default: false
     const include_release = core.getBooleanInput('include_release'); // default: true
+    const upload_to_testflight_input = core.getBooleanInput('upload_to_testflight');
+    const enable_macos_notarization_input = core.getBooleanInput('enable_macos_notarization');
 
     const identifier = normalizeInput(core.getInput('identifier'));
 
@@ -100,11 +103,12 @@ async function run(): Promise<void> {
     const ios_cert = getEnvValue('MAKEPAD_IOS_CERT');
     const ios_sim = parseEnvBool(getEnvValue('MAKEPAD_IOS_SIM') ?? 'false');
     let ios_create_ipa = parseEnvBool(getEnvValue('MAKEPAD_IOS_CREATE_IPA') ?? 'false');
-    const ios_upload_testflight = parseEnvBool(getEnvValue('MAKEPAD_IOS_UPLOAD_TESTFLIGHT') ?? 'false');
+    const ios_upload_testflight =
+      upload_to_testflight_input || parseEnvBool(getEnvValue('MAKEPAD_IOS_UPLOAD_TESTFLIGHT') ?? 'false');
     const ios_cargo_extra_args = stringArgv(getEnvValue('MAKEPAD_IOS_CARGO_EXTRA_ARGS') ?? '');
-    const app_store_connect_api_key =
-      getEnvValue('APP_STORE_CONNECT_API_KEY') ??
-      getEnvValue('APP_STORE_CONNECT_API_KEY_CONTENT');
+    const enable_macos_notarization =
+      enable_macos_notarization_input || parseEnvBool(getEnvValue('MAKEPAD_MACOS_ENABLE_NOTARIZATION') ?? 'false');
+    const app_store_connect_api_key = resolveAppStoreConnectApiKey();
     const app_store_connect_key_id = getEnvValue('APP_STORE_CONNECT_KEY_ID');
     const app_store_connect_issuer_id = getEnvValue('APP_STORE_CONNECT_ISSUER_ID');
 
@@ -173,7 +177,7 @@ async function run(): Promise<void> {
 
     if (ios_upload_testflight) {
       if (ios_sim) {
-        throw new Error('MAKEPAD_IOS_UPLOAD_TESTFLIGHT requires a device build; set MAKEPAD_IOS_SIM=false.');
+        throw new Error('upload_to_testflight/MAKEPAD_IOS_UPLOAD_TESTFLIGHT requires a device build; set MAKEPAD_IOS_SIM=false.');
       }
       if (!app_store_connect_api_key || !app_store_connect_key_id || !app_store_connect_issuer_id) {
         throw new Error(
@@ -182,7 +186,7 @@ async function run(): Promise<void> {
       }
       if (!ios_create_ipa) {
         ios_create_ipa = true;
-        core.info('MAKEPAD_IOS_UPLOAD_TESTFLIGHT enabled; forcing MAKEPAD_IOS_CREATE_IPA=true.');
+        core.info('upload_to_testflight enabled; forcing MAKEPAD_IOS_CREATE_IPA=true.');
       }
     }
 
@@ -208,6 +212,11 @@ async function run(): Promise<void> {
       ios_cert,
       ios_sim,
       ios_create_ipa,
+      ios_upload_testflight,
+      enable_macos_notarization,
+      app_store_connect_api_key,
+      app_store_connect_key_id,
+      app_store_connect_issuer_id,
       apple_certificate,
       apple_certificate_password,
       apple_provisioning_profile,

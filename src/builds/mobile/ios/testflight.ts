@@ -18,7 +18,7 @@ export async function uploadToTestFlight(params: {
   const ipa = pickIosIpaArtifact(artifacts);
   if (!ipa) {
     throw new Error(
-      'TestFlight upload requested but no .ipa artifact was built. Set MAKEPAD_IOS_CREATE_IPA=true and build for device.'
+      'TestFlight upload requested but no .ipa artifact was built. Set MAKEPAD_IOS_CREATE_IPA=true (or enable upload_to_testflight) and build for device.'
     );
   }
   if (!existsSync(ipa.path) || !statSync(ipa.path).isFile()) {
